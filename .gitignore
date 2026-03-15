@@ -217,3 +217,8 @@ frontend/.env.production
 # OS
 Thumbs.db
 .DS_Store
+
+# Environment files — never commit these
+.env.development
+.env.production
+.env.qa
