@@ -107,5 +107,34 @@ CREATE TRIGGER on_auth_user_created
   EXECUTE FUNCTION public.handle_new_user();
 
 -- ============================================================
+-- Function: handle_user_login
+-- Updates last_login_at every time a user signs in
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION public.handle_user_login()
+RETURNS TRIGGER AS $$
+BEGIN
+  UPDATE public.users
+  SET last_login_at = NOW(),
+      updated_at = NOW()
+  WHERE auth_user_id = NEW.id;
+  
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- ============================================================
+-- Trigger: on_auth_user_updated
+-- Fires when auth.users is updated (happens on every login)
+-- ============================================================
+
+DROP TRIGGER IF EXISTS on_auth_user_updated ON auth.users;
+
+CREATE TRIGGER on_auth_user_updated
+  AFTER UPDATE ON auth.users
+  FOR EACH ROW
+  WHEN (OLD.last_sign_in_at IS DISTINCT FROM NEW.last_sign_in_at)
+  EXECUTE FUNCTION public.handle_user_login();
+-- ============================================================
 -- MORE TABLES WILL BE ADDED HERE AS WE BUILD FEATURES
 -- ============================================================
