@@ -1,4 +1,5 @@
 import { Routes, Route, Navigate } from 'react-router-dom'
+import { useAuth } from './context/AuthContext'
 import Layout from './components/layout/Layout'
 import Dashboard from './pages/Dashboard'
 import Holdings from './pages/Holdings'
@@ -10,11 +11,56 @@ import FamilyMembers from './pages/admin/FamilyMembers'
 import Accounts from './pages/admin/Accounts'
 import ImportCSV from './pages/admin/ImportCSV'
 import Settings from './pages/admin/Settings'
+import Login from './pages/Login'
+import Register from './pages/Register'
+import ForgotPassword from './pages/ForgotPassword'
+import AuthCallback from './pages/AuthCallback'
+
+// Protected route — redirects to login if not authenticated
+function ProtectedRoute({ children }) {
+  const { user, loading } = useAuth()
+
+  if (loading) {
+    return (
+      <div style={{
+        display: 'flex', alignItems: 'center',
+        justifyContent: 'center', minHeight: '100vh',
+        background: 'var(--content-bg)'
+      }}>
+        <div style={{
+          width: '36px', height: '36px',
+          border: '3px solid var(--accent-light)',
+          borderTop: '3px solid var(--accent)',
+          borderRadius: '50%',
+          animation: 'spin 0.8s linear infinite'
+        }}/>
+        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+      </div>
+    )
+  }
+
+  if (!user) {
+    return <Navigate to="/login" replace />
+  }
+
+  return children
+}
 
 function App() {
   return (
     <Routes>
-      <Route path="/" element={<Layout />}>
+      {/* Public routes — no login needed */}
+      <Route path="/login" element={<Login />} />
+      <Route path="/register" element={<Register />} />
+      <Route path="/forgot-password" element={<ForgotPassword />} />
+      <Route path="/auth/callback" element={<AuthCallback />} />
+
+      {/* Protected routes — login required */}
+      <Route path="/" element={
+        <ProtectedRoute>
+          <Layout />
+        </ProtectedRoute>
+      }>
         <Route index element={<Navigate to="/dashboard" replace />} />
         <Route path="dashboard" element={<Dashboard />} />
         <Route path="holdings" element={<Holdings />} />
