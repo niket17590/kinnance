@@ -57,7 +57,6 @@ def verify_broker_and_account_type(db: Session, broker_code: str, account_type_c
             detail=f"Account type {account_type_code} not found or not available in region {region_code}"
         )
 
-    # Check applies_to matches member type
     if account_type.applies_to != "BOTH" and account_type.applies_to != member_type:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -113,7 +112,7 @@ def get_by_id(db: Session, account_id: UUID, owner_id: UUID):
 def create(db: Session, data: MemberAccountCreate, owner_id: UUID):
     """Create a new member account"""
     # Verify member belongs to user
-    member = verify_member_ownership(db, data.member_id, owner_id)
+    verify_member_ownership(db, data.member_id, owner_id)
 
     # Get member type for validation
     member_full = db.execute(
@@ -135,11 +134,11 @@ def create(db: Session, data: MemberAccountCreate, owner_id: UUID):
             text("""
                 INSERT INTO member_accounts (
                     member_id, broker_code, account_type_code,
-                    region_code, nickname, account_number, opened_date
+                    region_code, nickname, account_number
                 )
                 VALUES (
                     :member_id, :broker_code, :account_type_code,
-                    :region_code, :nickname, :account_number, :opened_date
+                    :region_code, :nickname, :account_number
                 )
                 RETURNING *
             """),
@@ -149,8 +148,7 @@ def create(db: Session, data: MemberAccountCreate, owner_id: UUID):
                 "account_type_code": data.account_type_code,
                 "region_code": data.region_code,
                 "nickname": data.nickname,
-                "account_number": data.account_number,
-                "opened_date": data.opened_date
+                "account_number": data.account_number
             }
         ).fetchone()
         db.commit()
@@ -176,8 +174,6 @@ def update(db: Session, account_id: UUID, data: MemberAccountUpdate, owner_id: U
         fields["nickname"] = data.nickname
     if data.account_number is not None:
         fields["account_number"] = data.account_number
-    if data.opened_date is not None:
-        fields["opened_date"] = data.opened_date
     if data.is_active is not None:
         fields["is_active"] = data.is_active
 

@@ -208,6 +208,7 @@ CREATE TABLE IF NOT EXISTS account_types (
     tax_category                TEXT NOT NULL,
     has_contribution_limit      BOOLEAN NOT NULL DEFAULT FALSE,
     has_lifetime_limit          BOOLEAN NOT NULL DEFAULT FALSE,
+    contribution_limit_type     TEXT,
     is_active                   BOOLEAN NOT NULL DEFAULT TRUE,
     created_at                  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at                  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -217,8 +218,11 @@ CREATE TABLE IF NOT EXISTS account_types (
         CHECK (tax_category IN ('TAX_FREE', 'TAX_DEFERRED', 'TAXABLE', 'CORP_TAXABLE'))
 );
 
-CREATE INDEX IF NOT EXISTS idx_account_types_region ON account_types(region_code);
-CREATE INDEX IF NOT EXISTS idx_account_types_applies_to ON account_types(applies_to);
+CREATE INDEX IF NOT EXISTS idx_account_types_region
+    ON account_types(region_code);
+
+CREATE INDEX IF NOT EXISTS idx_account_types_applies_to
+    ON account_types(applies_to);
 
 CREATE TRIGGER trigger_account_types_updated_at
     BEFORE UPDATE ON account_types
@@ -227,6 +231,7 @@ CREATE TRIGGER trigger_account_types_updated_at
 COMMENT ON TABLE account_types IS 'Supported account types per region — managed by super admin';
 COMMENT ON COLUMN account_types.applies_to IS 'PERSON, CORPORATION, or BOTH';
 COMMENT ON COLUMN account_types.tax_category IS 'Tax treatment of this account type';
+COMMENT ON COLUMN account_types.contribution_limit_type IS 'FIXED_ANNUAL, INCOME_BASED, LIFETIME, or NULL';
 
 -- ============================================================
 -- 5. ACCOUNT TYPE LIMITS
@@ -243,7 +248,6 @@ CREATE TABLE IF NOT EXISTS account_type_limits (
 );
 
 COMMENT ON TABLE account_type_limits IS 'Government annual and lifetime limits per account type per year';
-COMMENT ON COLUMN account_type_limits.lifetime_limit IS 'NULL if no lifetime limit exists';
 
 -- ============================================================
 -- 6. MEMBERS
@@ -284,7 +288,6 @@ CREATE TABLE IF NOT EXISTS member_accounts (
     region_code         TEXT NOT NULL REFERENCES regions(code),
     nickname            TEXT,
     account_number      TEXT,
-    opened_date         DATE,
     is_active           BOOLEAN NOT NULL DEFAULT TRUE,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -292,8 +295,11 @@ CREATE TABLE IF NOT EXISTS member_accounts (
         UNIQUE (member_id, broker_code, account_type_code)
 );
 
-CREATE INDEX IF NOT EXISTS idx_member_accounts_member_id ON member_accounts(member_id);
-CREATE INDEX IF NOT EXISTS idx_member_accounts_region ON member_accounts(region_code);
+CREATE INDEX IF NOT EXISTS idx_member_accounts_member_id
+    ON member_accounts(member_id);
+
+CREATE INDEX IF NOT EXISTS idx_member_accounts_region
+    ON member_accounts(region_code);
 
 CREATE TRIGGER trigger_member_accounts_updated_at
     BEFORE UPDATE ON member_accounts
@@ -301,7 +307,6 @@ CREATE TRIGGER trigger_member_accounts_updated_at
 
 COMMENT ON TABLE member_accounts IS 'Brokerage accounts belonging to members';
 COMMENT ON COLUMN member_accounts.account_number IS 'Optional brokerage account number';
-COMMENT ON COLUMN member_accounts.opened_date IS 'Used for TFSA contribution room calculation';
 
 -- ============================================================
 -- 8. CIRCLES
@@ -353,6 +358,7 @@ CREATE TABLE IF NOT EXISTS contribution_room (
     member_id           UUID NOT NULL REFERENCES members(id) ON DELETE CASCADE,
     account_type_code   TEXT NOT NULL REFERENCES account_types(code),
     tax_year            INTEGER NOT NULL,
+    opened_year         INTEGER,
     annual_limit        NUMERIC(12,2) NOT NULL DEFAULT 0,
     carried_forward     NUMERIC(12,2) NOT NULL DEFAULT 0,
     contributed         NUMERIC(12,2) NOT NULL DEFAULT 0,
@@ -367,15 +373,16 @@ CREATE TABLE IF NOT EXISTS contribution_room (
         UNIQUE (member_id, account_type_code, tax_year)
 );
 
-CREATE INDEX IF NOT EXISTS idx_contribution_room_member ON contribution_room(member_id);
+CREATE INDEX IF NOT EXISTS idx_contribution_room_member
+    ON contribution_room(member_id);
 
 CREATE TRIGGER trigger_contribution_room_updated_at
     BEFORE UPDATE ON contribution_room
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 COMMENT ON TABLE contribution_room IS 'Calculated contribution room per member per account type per year';
+COMMENT ON COLUMN contribution_room.opened_year IS 'Year account type was first opened — used for FIXED_ANNUAL calculations';
 COMMENT ON COLUMN contribution_room.is_overridden IS 'True when user manually enters CRA confirmed room';
-COMMENT ON COLUMN contribution_room.override_room IS 'CRA confirmed room — used when is_overridden is true';
 
 -- ============================================================
 -- MORE TABLES WILL BE ADDED HERE AS WE BUILD FEATURES

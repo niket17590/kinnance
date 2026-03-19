@@ -1,6 +1,6 @@
 from pydantic import BaseModel
 from typing import Optional
-from datetime import datetime, date
+from datetime import datetime
 from uuid import UUID
 
 class MemberAccountCreate(BaseModel):
@@ -10,7 +10,6 @@ class MemberAccountCreate(BaseModel):
     region_code: str
     nickname: Optional[str] = None
     account_number: Optional[str] = None
-    opened_date: Optional[date] = None
 
     class Config:
         json_schema_extra = {
@@ -20,15 +19,13 @@ class MemberAccountCreate(BaseModel):
                 "account_type_code": "TFSA",
                 "region_code": "CA",
                 "nickname": "My Main TFSA",
-                "account_number": "optional",
-                "opened_date": "2019-01-01"
+                "account_number": "optional"
             }
         }
 
 class MemberAccountUpdate(BaseModel):
     nickname: Optional[str] = None
     account_number: Optional[str] = None
-    opened_date: Optional[date] = None
     is_active: Optional[bool] = None
 
 class MemberAccountResponse(BaseModel):
@@ -39,7 +36,6 @@ class MemberAccountResponse(BaseModel):
     region_code: str
     nickname: Optional[str] = None
     account_number: Optional[str] = None
-    opened_date: Optional[date] = None
     is_active: bool
     created_at: datetime
     updated_at: datetime

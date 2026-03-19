@@ -95,44 +95,6 @@ CREATE POLICY brokers_modify_super_admin
     );
 
 -- ============================================================
--- ACCOUNT TYPES — public read, super admin write
--- ============================================================
-
-ALTER TABLE account_types ENABLE ROW LEVEL SECURITY;
-
-CREATE POLICY account_types_select_all
-    ON account_types FOR SELECT USING (TRUE);
-
-CREATE POLICY account_types_modify_super_admin
-    ON account_types FOR ALL
-    USING (
-        EXISTS (
-            SELECT 1 FROM users
-            WHERE auth_user_id = auth.uid()
-            AND is_super_admin = TRUE
-        )
-    );
-
--- ============================================================
--- ACCOUNT TYPE LIMITS — public read, super admin write
--- ============================================================
-
-ALTER TABLE account_type_limits ENABLE ROW LEVEL SECURITY;
-
-CREATE POLICY account_type_limits_select_all
-    ON account_type_limits FOR SELECT USING (TRUE);
-
-CREATE POLICY account_type_limits_modify_super_admin
-    ON account_type_limits FOR ALL
-    USING (
-        EXISTS (
-            SELECT 1 FROM users
-            WHERE auth_user_id = auth.uid()
-            AND is_super_admin = TRUE
-        )
-    );
-
--- ============================================================
 -- MEMBERS — owner only, super admin sees all
 -- ============================================================
 
@@ -164,58 +126,6 @@ CREATE POLICY members_delete_own
 
 CREATE POLICY members_super_admin
     ON members FOR ALL
-    USING (
-        EXISTS (
-            SELECT 1 FROM users
-            WHERE auth_user_id = auth.uid()
-            AND is_super_admin = TRUE
-        )
-    );
-
--- ============================================================
--- MEMBER ACCOUNTS — owner of member only
--- ============================================================
-
-ALTER TABLE member_accounts ENABLE ROW LEVEL SECURITY;
-
-CREATE POLICY member_accounts_select_own
-    ON member_accounts FOR SELECT
-    USING (
-        member_id IN (
-            SELECT id FROM members
-            WHERE owner_id = (SELECT id FROM users WHERE auth_user_id = auth.uid())
-        )
-    );
-
-CREATE POLICY member_accounts_insert_own
-    ON member_accounts FOR INSERT
-    WITH CHECK (
-        member_id IN (
-            SELECT id FROM members
-            WHERE owner_id = (SELECT id FROM users WHERE auth_user_id = auth.uid())
-        )
-    );
-
-CREATE POLICY member_accounts_update_own
-    ON member_accounts FOR UPDATE
-    USING (
-        member_id IN (
-            SELECT id FROM members
-            WHERE owner_id = (SELECT id FROM users WHERE auth_user_id = auth.uid())
-        )
-    );
-
-CREATE POLICY member_accounts_delete_own
-    ON member_accounts FOR DELETE
-    USING (
-        member_id IN (
-            SELECT id FROM members
-            WHERE owner_id = (SELECT id FROM users WHERE auth_user_id = auth.uid())
-        )
-    );
-
-CREATE POLICY member_accounts_super_admin
-    ON member_accounts FOR ALL
     USING (
         EXISTS (
             SELECT 1 FROM users
@@ -299,6 +209,96 @@ CREATE POLICY circle_accounts_delete_own
 
 CREATE POLICY circle_accounts_super_admin
     ON circle_accounts FOR ALL
+    USING (
+        EXISTS (
+            SELECT 1 FROM users
+            WHERE auth_user_id = auth.uid()
+            AND is_super_admin = TRUE
+        )
+    );
+
+-- ============================================================
+-- ACCOUNT TYPES — public read, super admin write
+-- ============================================================
+
+ALTER TABLE account_types ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY account_types_select_all
+    ON account_types FOR SELECT USING (TRUE);
+
+CREATE POLICY account_types_modify_super_admin
+    ON account_types FOR ALL
+    USING (
+        EXISTS (
+            SELECT 1 FROM users
+            WHERE auth_user_id = auth.uid()
+            AND is_super_admin = TRUE
+        )
+    );
+
+-- ============================================================
+-- ACCOUNT TYPE LIMITS — public read, super admin write
+-- ============================================================
+
+ALTER TABLE account_type_limits ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY account_type_limits_select_all
+    ON account_type_limits FOR SELECT USING (TRUE);
+
+CREATE POLICY account_type_limits_modify_super_admin
+    ON account_type_limits FOR ALL
+    USING (
+        EXISTS (
+            SELECT 1 FROM users
+            WHERE auth_user_id = auth.uid()
+            AND is_super_admin = TRUE
+        )
+    );
+
+-- ============================================================
+-- MEMBER ACCOUNTS — owner of member only
+-- ============================================================
+
+ALTER TABLE member_accounts ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY member_accounts_select_own
+    ON member_accounts FOR SELECT
+    USING (
+        member_id IN (
+            SELECT id FROM members
+            WHERE owner_id = (SELECT id FROM users WHERE auth_user_id = auth.uid())
+        )
+    );
+
+CREATE POLICY member_accounts_insert_own
+    ON member_accounts FOR INSERT
+    WITH CHECK (
+        member_id IN (
+            SELECT id FROM members
+            WHERE owner_id = (SELECT id FROM users WHERE auth_user_id = auth.uid())
+        )
+    );
+
+CREATE POLICY member_accounts_update_own
+    ON member_accounts FOR UPDATE
+    USING (
+        member_id IN (
+            SELECT id FROM members
+            WHERE owner_id = (SELECT id FROM users WHERE auth_user_id = auth.uid())
+        )
+    );
+
+CREATE POLICY member_accounts_delete_own
+    ON member_accounts FOR DELETE
+    USING (
+        member_id IN (
+            SELECT id FROM members
+            WHERE owner_id = (SELECT id FROM users WHERE auth_user_id = auth.uid())
+        )
+    );
+
+CREATE POLICY member_accounts_super_admin
+    ON member_accounts FOR ALL
     USING (
         EXISTS (
             SELECT 1 FROM users

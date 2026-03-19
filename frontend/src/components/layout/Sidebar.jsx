@@ -1,10 +1,10 @@
-import { useAuth } from "../../context/AuthContext";
 import { useState } from "react";
 import { NavLink } from "react-router-dom";
+import { useAuth } from "../../context/AuthContext";
 
 const navItems = [
   {
-    group: "Overview",
+    group: "",
     items: [
       {
         path: "/dashboard",
@@ -150,14 +150,37 @@ const navItems = [
           </svg>
         ),
       },
+      {
+        path: "/contribution-limits",
+        label: "Contribution limits",
+        icon: (
+          <svg viewBox="0 0 18 18" fill="none" width="18" height="18">
+            <rect
+              x="2"
+              y="2"
+              width="14"
+              height="14"
+              rx="2"
+              stroke="currentColor"
+              strokeWidth="1.3"
+            />
+            <path
+              d="M9 6v6M6 9h6"
+              stroke="currentColor"
+              strokeWidth="1.4"
+              strokeLinecap="round"
+            />
+          </svg>
+        ),
+      },
     ],
   },
   {
     group: "Admin",
     items: [
       {
-        path: "/admin/family",
-        label: "Family & members",
+        path: "/admin/members",
+        label: "Members",
         icon: (
           <svg viewBox="0 0 18 18" fill="none" width="18" height="18">
             <circle
@@ -168,7 +191,7 @@ const navItems = [
               strokeWidth="1.3"
             />
             <path
-              d="M3 16c0-3.3 2.7-6 6-5s6 1.7 6 5"
+              d="M3 16c0-3.3 2.7-5 6-5s6 1.7 6 5"
               stroke="currentColor"
               strokeWidth="1.3"
               strokeLinecap="round"
@@ -199,8 +222,30 @@ const navItems = [
         ),
       },
       {
+        path: "/admin/circles",
+        label: "Circles",
+        icon: (
+          <svg viewBox="0 0 18 18" fill="none" width="18" height="18">
+            <circle
+              cx="9"
+              cy="9"
+              r="6.5"
+              stroke="currentColor"
+              strokeWidth="1.3"
+            />
+            <circle
+              cx="9"
+              cy="9"
+              r="3"
+              stroke="currentColor"
+              strokeWidth="1.2"
+            />
+          </svg>
+        ),
+      },
+      {
         path: "/admin/import",
-        label: "Import CSV",
+        label: "Upload Transactions",
         icon: (
           <svg viewBox="0 0 18 18" fill="none" width="18" height="18">
             <path
@@ -242,7 +287,6 @@ function Sidebar({ isOpen, onClose }) {
   const [expanded, setExpanded] = useState(false);
   const { user, signOut } = useAuth();
 
-  // On mobile use isOpen prop, on desktop use hover expanded state
   const sidebarWidth = expanded ? "200px" : "58px";
 
   return (
@@ -326,7 +370,7 @@ function Sidebar({ isOpen, onClose }) {
             color: "#FFFFFF",
             paddingLeft: "11px",
             marginBottom: "8px",
-            opacity: expanded ? 1 : 0,
+            opacity: 1,
             transition: "opacity 0.15s ease",
           }}
         >
@@ -345,7 +389,7 @@ function Sidebar({ isOpen, onClose }) {
             alignItems: expanded ? "flex-start" : "center",
           }}
         >
-          {/* Divider */}
+          {/* Divider between groups */}
           {gi > 0 && (
             <div
               style={{
@@ -357,8 +401,8 @@ function Sidebar({ isOpen, onClose }) {
             />
           )}
 
-          {/* Group label — only when expanded */}
-          {expanded && (
+          {/* Group label — only when expanded and label exists */}
+          {expanded && group.group && (
             <div
               style={{
                 fontSize: "10px",
@@ -411,7 +455,7 @@ function Sidebar({ isOpen, onClose }) {
                   style={{
                     fontSize: "13px",
                     fontWeight: "500",
-                    opacity: expanded ? 1 : 0,
+                    opacity: 1,
                     transition: "opacity 0.15s ease",
                   }}
                 >
@@ -423,23 +467,6 @@ function Sidebar({ isOpen, onClose }) {
         </div>
       ))}
 
-      <style>{`
-        @media (max-width: 768px) {
-          .kinnance-sidebar {
-            position: fixed !important;
-            top: 0 !important;
-            left: 0 !important;
-            height: 100vh !important;
-            width: 200px !important;
-            min-width: 200px !important;
-            transform: translateX(-100%);
-            transition: transform 0.25s ease !important;
-          }
-          .kinnance-sidebar.sidebar-mobile-open {
-            transform: translateX(0) !important;
-          }
-        }
-      `}</style>
       {/* Profile + sign out */}
       <div
         style={{
@@ -464,7 +491,6 @@ function Sidebar({ isOpen, onClose }) {
             transition: "all 0.12s",
           }}
         >
-          {/* Avatar circle */}
           <div
             style={{
               width: "28px",
@@ -493,7 +519,6 @@ function Sidebar({ isOpen, onClose }) {
             )}
           </div>
 
-          {/* Name + sign out — only when expanded */}
           {expanded && (
             <div style={{ minWidth: 0 }}>
               <div
@@ -520,6 +545,24 @@ function Sidebar({ isOpen, onClose }) {
           )}
         </div>
       </div>
+
+      <style>{`
+        @media (max-width: 768px) {
+          .kinnance-sidebar {
+            position: fixed !important;
+            top: 0 !important;
+            left: 0 !important;
+            height: 100vh !important;
+            width: 200px !important;
+            min-width: 200px !important;
+            transform: translateX(-100%);
+            transition: transform 0.25s ease !important;
+          }
+          .kinnance-sidebar.sidebar-mobile-open {
+            transform: translateX(0) !important;
+          }
+        }
+      `}</style>
     </aside>
   );
 }

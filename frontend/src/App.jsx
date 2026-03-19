@@ -9,14 +9,15 @@ import CapitalGains from './pages/CapitalGains'
 import Dividends from './pages/Dividends'
 import FamilyMembers from './pages/admin/FamilyMembers'
 import Accounts from './pages/admin/Accounts'
+import Circles from './pages/admin/Circles'
 import ImportCSV from './pages/admin/ImportCSV'
 import Settings from './pages/admin/Settings'
 import Login from './pages/Login'
 import Register from './pages/Register'
 import ForgotPassword from './pages/ForgotPassword'
 import AuthCallback from './pages/AuthCallback'
+import ContributionLimits from './pages/ContributionLimits'
 
-// Protected route — redirects to login if not authenticated
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth()
 
@@ -39,23 +40,18 @@ function ProtectedRoute({ children }) {
     )
   }
 
-  if (!user) {
-    return <Navigate to="/login" replace />
-  }
-
+  if (!user) return <Navigate to="/login" replace />
   return children
 }
 
 function App() {
   return (
     <Routes>
-      {/* Public routes — no login needed */}
       <Route path="/login" element={<Login />} />
       <Route path="/register" element={<Register />} />
       <Route path="/forgot-password" element={<ForgotPassword />} />
       <Route path="/auth/callback" element={<AuthCallback />} />
 
-      {/* Protected routes — login required */}
       <Route path="/" element={
         <ProtectedRoute>
           <Layout />
@@ -68,10 +64,12 @@ function App() {
         <Route path="performance" element={<Performance />} />
         <Route path="capital-gains" element={<CapitalGains />} />
         <Route path="dividends" element={<Dividends />} />
-        <Route path="admin/family" element={<FamilyMembers />} />
+        <Route path="admin/members" element={<FamilyMembers />} />
         <Route path="admin/accounts" element={<Accounts />} />
+        <Route path="admin/circles" element={<Circles />} />
         <Route path="admin/import" element={<ImportCSV />} />
         <Route path="admin/settings" element={<Settings />} />
+        <Route path="contribution-limits" element={<ContributionLimits />} />
       </Route>
     </Routes>
   )

@@ -59,30 +59,30 @@ INSERT INTO account_types (
     code, region_code, name, short_name,
     applies_to, tax_category,
     has_contribution_limit, has_lifetime_limit,
-    is_active
+    contribution_limit_type, is_active
 ) VALUES
-    ('TFSA',        'CA', 'Tax-Free Savings Account',           'TFSA',        'PERSON',      'TAX_FREE',     TRUE,  FALSE, TRUE),
-    ('FHSA',        'CA', 'First Home Savings Account',         'FHSA',        'PERSON',      'TAX_FREE',     TRUE,  TRUE,  TRUE),
-    ('RRSP',        'CA', 'Registered Retirement Savings Plan', 'RRSP',        'PERSON',      'TAX_DEFERRED', TRUE,  FALSE, TRUE),
-    ('RRIF',        'CA', 'Registered Retirement Income Fund',  'RRIF',        'PERSON',      'TAX_DEFERRED', FALSE, FALSE, TRUE),
-    ('RESP',        'CA', 'Registered Education Savings Plan',  'RESP',        'PERSON',      'TAX_DEFERRED', FALSE, TRUE,  TRUE),
-    ('LIRA',        'CA', 'Locked-In Retirement Account',       'LIRA',        'PERSON',      'TAX_DEFERRED', FALSE, FALSE, TRUE),
-    ('CASH',        'CA', 'Non-Registered Cash Account',        'Cash',        'PERSON',      'TAXABLE',      FALSE, FALSE, TRUE),
-    ('MARGIN',      'CA', 'Non-Registered Margin Account',      'Margin',      'PERSON',      'TAXABLE',      FALSE, FALSE, TRUE),
-    ('CORP_CASH',   'CA', 'Corporate Cash Account',             'Corp Cash',   'CORPORATION', 'CORP_TAXABLE', FALSE, FALSE, TRUE),
-    ('CORP_MARGIN', 'CA', 'Corporate Margin Account',           'Corp Margin', 'CORPORATION', 'CORP_TAXABLE', FALSE, FALSE, TRUE)
+    ('TFSA',        'CA', 'Tax-Free Savings Account',           'TFSA',        'PERSON',      'TAX_FREE',     TRUE,  FALSE, 'FIXED_ANNUAL', TRUE),
+    ('FHSA',        'CA', 'First Home Savings Account',         'FHSA',        'PERSON',      'TAX_FREE',     TRUE,  TRUE,  'FIXED_ANNUAL', TRUE),
+    ('RRSP',        'CA', 'Registered Retirement Savings Plan', 'RRSP',        'PERSON',      'TAX_DEFERRED', TRUE,  FALSE, 'INCOME_BASED', TRUE),
+    ('RRIF',        'CA', 'Registered Retirement Income Fund',  'RRIF',        'PERSON',      'TAX_DEFERRED', FALSE, FALSE, 'INCOME_BASED', TRUE),
+    ('RESP',        'CA', 'Registered Education Savings Plan',  'RESP',        'PERSON',      'TAX_DEFERRED', FALSE, TRUE,  'LIFETIME',     TRUE),
+    ('LIRA',        'CA', 'Locked-In Retirement Account',       'LIRA',        'PERSON',      'TAX_DEFERRED', FALSE, FALSE, 'INCOME_BASED', TRUE),
+    ('CASH',        'CA', 'Non-Registered Cash Account',        'Cash',        'PERSON',      'TAXABLE',      FALSE, FALSE, NULL,           TRUE),
+    ('MARGIN',      'CA', 'Non-Registered Margin Account',      'Margin',      'PERSON',      'TAXABLE',      FALSE, FALSE, NULL,           TRUE),
+    ('CORP_CASH',   'CA', 'Corporate Cash Account',             'Corp Cash',   'CORPORATION', 'CORP_TAXABLE', FALSE, FALSE, NULL,           TRUE),
+    ('CORP_MARGIN', 'CA', 'Corporate Margin Account',           'Corp Margin', 'CORPORATION', 'CORP_TAXABLE', FALSE, FALSE, NULL,           TRUE)
 ON CONFLICT (code) DO UPDATE SET
-    name                   = EXCLUDED.name,
-    short_name             = EXCLUDED.short_name,
-    applies_to             = EXCLUDED.applies_to,
-    tax_category           = EXCLUDED.tax_category,
-    has_contribution_limit = EXCLUDED.has_contribution_limit,
-    has_lifetime_limit     = EXCLUDED.has_lifetime_limit,
-    is_active              = EXCLUDED.is_active;
+    name                    = EXCLUDED.name,
+    short_name              = EXCLUDED.short_name,
+    applies_to              = EXCLUDED.applies_to,
+    tax_category            = EXCLUDED.tax_category,
+    has_contribution_limit  = EXCLUDED.has_contribution_limit,
+    has_lifetime_limit      = EXCLUDED.has_lifetime_limit,
+    contribution_limit_type = EXCLUDED.contribution_limit_type,
+    is_active               = EXCLUDED.is_active;
 
 -- ============================================================
 -- ACCOUNT TYPE LIMITS — Canada
--- CRA official limits — never changes once set
 -- ============================================================
 
 -- TFSA annual limits (2009 onwards)
@@ -106,7 +106,7 @@ INSERT INTO account_type_limits (account_type_code, tax_year, annual_limit, life
     ('TFSA', 2025, 7000.00,  NULL)
 ON CONFLICT (account_type_code, tax_year) DO NOTHING;
 
--- FHSA annual + lifetime limits (started 2023)
+-- FHSA annual + lifetime limits
 INSERT INTO account_type_limits (account_type_code, tax_year, annual_limit, lifetime_limit) VALUES
     ('FHSA', 2023, 8000.00, 40000.00),
     ('FHSA', 2024, 8000.00, 40000.00),
@@ -114,7 +114,6 @@ INSERT INTO account_type_limits (account_type_code, tax_year, annual_limit, life
 ON CONFLICT (account_type_code, tax_year) DO NOTHING;
 
 -- RESP lifetime limit only
-INSERT INTO account_type_limits (account_type_code, tax_year, annual_limit, lifetime_limit) VALUES
-    ('RESP', 2024, NULL, 50000.00),
-    ('RESP', 2025, NULL, 50000.00)
+INSERT INTO account_type_limits (account_type_code, tax_year, annual_limit, lifetime_limit, notes)
+VALUES ('RESP', 0, NULL, 50000.00, 'Lifetime limit — tax_year 0 means not year-specific')
 ON CONFLICT (account_type_code, tax_year) DO NOTHING;
