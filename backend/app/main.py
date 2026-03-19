@@ -4,7 +4,7 @@ from fastapi.openapi.docs import get_swagger_ui_html, get_redoc_html
 from fastapi.openapi.utils import get_openapi
 from app.core.config import settings
 from app.core.security import require_super_admin
-from app.api import members
+from app.api import members, reference_data, member_accounts, circles
 import os
 
 # Hide docs in production by disabling default docs URLs
@@ -24,6 +24,9 @@ origins = [
 
 # API routes
 app.include_router(members.router, prefix="/api/v1")
+app.include_router(reference_data.router, prefix="/api/v1")
+app.include_router(member_accounts.router, prefix="/api/v1")
+app.include_router(circles.router, prefix="/api/v1")
 
 frontend_url = os.getenv("FRONTEND_URL")
 if frontend_url:
