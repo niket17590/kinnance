@@ -19,7 +19,7 @@ def get_all(db: Session, owner_id: UUID):
         """),
         {"owner_id": str(owner_id)}
     ).fetchall()
-    return result
+    return [dict(row._mapping) for row in result]
 
 def get_by_id(db: Session, circle_id: UUID, owner_id: UUID):
     """Get a single circle by ID"""
@@ -125,20 +125,32 @@ def get_accounts(db: Session, circle_id: UUID, owner_id: UUID):
     result = db.execute(
         text("""
             SELECT
-                ma.*,
+                ma.id,
+                ma.member_id,
+                ma.broker_code,
+                ma.account_type_code,
+                ma.region_code,
+                ma.nickname,
+                ma.account_number,
+                ma.is_active,
+                ma.created_at,
+                ma.updated_at,
                 m.display_name as member_name,
                 m.member_type,
+                at.tax_category,
                 ca.added_at
             FROM circle_accounts ca
             JOIN member_accounts ma ON ca.account_id = ma.id
             JOIN members m ON ma.member_id = m.id
+            JOIN account_types at ON ma.account_type_code = at.code
             WHERE ca.circle_id = :circle_id
             AND ma.is_active = TRUE
             ORDER BY m.display_name, ma.account_type_code
         """),
         {"circle_id": str(circle_id)}
     ).fetchall()
-    return result
+
+    return [dict(row._mapping) for row in result]
 
 def add_account(db: Session, circle_id: UUID, account_id: UUID, owner_id: UUID):
     """Tag an account to a circle — validates same region"""
