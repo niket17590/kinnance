@@ -117,3 +117,18 @@ ON CONFLICT (account_type_code, tax_year) DO NOTHING;
 INSERT INTO account_type_limits (account_type_code, tax_year, annual_limit, lifetime_limit, notes)
 VALUES ('RESP', 0, NULL, 50000.00, 'Lifetime limit — tax_year 0 means not year-specific')
 ON CONFLICT (account_type_code, tax_year) DO NOTHING;
+
+-- ============================================================
+-- APP SETTINGS — defaults
+-- ============================================================
+
+INSERT INTO app_settings (setting_key, setting_value, description) VALUES
+    ('price_refresh_enabled',    'true',   'Enable/disable background price refresh scheduler'),
+    ('price_refresh_minutes',    '60',     'How often to refresh prices in minutes'),
+    ('price_refresh_symbols_limit', '800', 'Max symbols per refresh (Twelve Data free tier = 800/day)'),
+    ('twelvedata_api_key',       '',       'Twelve Data API key — set this before enabling price refresh'),
+    ('app_version',              '1.0.0',  'Current application version'),
+    ('maintenance_mode',         'false',  'When true, show maintenance message to all users'),
+    ('max_import_rows',          '5000',   'Maximum rows allowed per CSV import'),
+    ('supported_currencies',     'CAD,USD','Comma-separated list of supported trade currencies')
+ON CONFLICT (setting_key) DO NOTHING;

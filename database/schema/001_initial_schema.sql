@@ -385,5 +385,347 @@ COMMENT ON COLUMN contribution_room.opened_year IS 'Year account type was first 
 COMMENT ON COLUMN contribution_room.is_overridden IS 'True when user manually enters CRA confirmed room';
 
 -- ============================================================
+-- 11. BROKER ACCOUNT MAPPINGS
+-- Saves how broker file identifiers map to our accounts.
+-- e.g. IBKR "Individual Cash" -> account UUID
+-- Populated on first upload, auto-matched on subsequent uploads.
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS broker_account_mappings (
+    id                          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    account_id                  UUID NOT NULL REFERENCES member_accounts(id) ON DELETE CASCADE,
+    broker_code                 TEXT NOT NULL REFERENCES brokers(code),
+    broker_account_identifier   TEXT NOT NULL,
+    created_at                  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at                  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_broker_account_mapping
+        UNIQUE (broker_code, broker_account_identifier)
+);
+
+CREATE INDEX IF NOT EXISTS idx_broker_mappings_account
+    ON broker_account_mappings(account_id);
+
+CREATE INDEX IF NOT EXISTS idx_broker_mappings_broker
+    ON broker_account_mappings(broker_code, broker_account_identifier);
+
+CREATE TRIGGER trigger_broker_account_mappings_updated_at
+    BEFORE UPDATE ON broker_account_mappings
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+COMMENT ON TABLE broker_account_mappings IS 'Maps broker file identifiers to Kinnance accounts — saved after first upload for auto-matching';
+COMMENT ON COLUMN broker_account_mappings.broker_account_identifier IS 'e.g. HQ78JF768CAD (WS), Individual Cash (IBKR), 40132143 (Questrade)';
+
+-- ============================================================
+-- 12. IMPORT BATCHES
+-- One row per CSV upload. Audit trail.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS import_batches (
+    id                      UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    owner_id                UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    broker_code             TEXT NOT NULL REFERENCES brokers(code),
+    filename                TEXT NOT NULL,
+    status                  TEXT NOT NULL DEFAULT 'PROCESSING',
+    rows_total              INTEGER NOT NULL DEFAULT 0,
+    rows_imported           INTEGER NOT NULL DEFAULT 0,
+    rows_duplicate_skipped  INTEGER NOT NULL DEFAULT 0,
+    rows_account_skipped    INTEGER NOT NULL DEFAULT 0,
+    transaction_date_from   DATE,
+    transaction_date_to     DATE,
+    error_message           TEXT,
+    imported_at             TIMESTAMPTZ,
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT chk_import_status
+        CHECK (status IN ('PROCESSING', 'COMPLETE', 'FAILED'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_import_batches_owner
+    ON import_batches(owner_id);
+
+CREATE INDEX IF NOT EXISTS idx_import_batches_broker
+    ON import_batches(broker_code);
+
+COMMENT ON TABLE import_batches IS 'Audit trail for every CSV upload';
+COMMENT ON COLUMN import_batches.rows_duplicate_skipped IS 'Transactions already in DB — skipped on re-upload';
+COMMENT ON COLUMN import_batches.rows_account_skipped IS 'Transactions for accounts user chose to skip';
+
+-- ============================================================
+-- 13. TRANSACTIONS
+-- Source of truth. Every financial event ever.
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS transactions (
+    id                      UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    account_id              UUID NOT NULL REFERENCES member_accounts(id) ON DELETE CASCADE,
+    import_batch_id         UUID REFERENCES import_batches(id) ON DELETE SET NULL,
+    transaction_type        TEXT NOT NULL,
+    trade_date              DATE NOT NULL,
+    settlement_date         DATE,
+    symbol                  TEXT,
+    symbol_normalized       TEXT,
+    asset_type              TEXT,
+    description             TEXT,
+    quantity                NUMERIC(18,8),
+    price_per_unit          NUMERIC(18,6),
+    trade_currency          TEXT NOT NULL DEFAULT 'CAD',
+    gross_amount            NUMERIC(18,2),
+    commission              NUMERIC(18,6) NOT NULL DEFAULT 0,
+    net_amount              NUMERIC(18,2) NOT NULL,
+    net_amount_cad          NUMERIC(18,2) NOT NULL,
+    fx_rate_to_cad          NUMERIC(10,6),
+    option_contract_id      UUID,
+    paired_transaction_id   UUID REFERENCES transactions(id) ON DELETE SET NULL,
+    import_hash             TEXT UNIQUE,
+    raw_data                JSONB,
+    notes                   TEXT,
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT chk_transaction_type CHECK (
+        transaction_type IN (
+            'BUY', 'SELL', 'DIVIDEND', 'DEPOSIT', 'WITHDRAWAL',
+            'FX_CONVERSION', 'INTEREST', 'FEE', 'RETURN_OF_CAPITAL',
+            'STOCK_SPLIT', 'CORPORATE_ACTION', 'INTERNAL_TRANSFER',
+            'NORBERT_GAMBIT', 'OPTION_PREMIUM', 'OPTION_BUY_BACK',
+            'OPTION_ASSIGNED', 'OPTION_EXPIRED', 'CRYPTO', 'OTHER'
+        )
+    ),
+    CONSTRAINT chk_asset_type CHECK (
+        asset_type IN ('STOCK', 'ETF', 'OPTION', 'CRYPTO', 'CASH', 'OTHER', NULL)
+    ),
+    CONSTRAINT chk_trade_currency CHECK (
+        trade_currency IN ('CAD', 'USD', 'GBP', 'EUR', 'INR')
+    )
+);
+
+CREATE INDEX IF NOT EXISTS idx_transactions_account_id
+    ON transactions(account_id);
+
+CREATE INDEX IF NOT EXISTS idx_transactions_trade_date
+    ON transactions(trade_date DESC);
+
+CREATE INDEX IF NOT EXISTS idx_transactions_symbol
+    ON transactions(symbol_normalized)
+    WHERE symbol_normalized IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_transactions_type
+    ON transactions(transaction_type);
+
+CREATE INDEX IF NOT EXISTS idx_transactions_import_batch
+    ON transactions(import_batch_id)
+    WHERE import_batch_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_transactions_account_symbol
+    ON transactions(account_id, symbol_normalized, trade_date DESC)
+    WHERE symbol_normalized IS NOT NULL;
+
+CREATE TRIGGER trigger_transactions_updated_at
+    BEFORE UPDATE ON transactions
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+COMMENT ON TABLE transactions IS 'Source of truth — every financial event across all accounts';
+COMMENT ON COLUMN transactions.symbol IS 'Raw symbol from broker CSV';
+COMMENT ON COLUMN transactions.symbol_normalized IS 'Clean symbol for price lookups — DLR.TO not G036247';
+COMMENT ON COLUMN transactions.net_amount IS 'In trade_currency — negative=outflow positive=inflow';
+COMMENT ON COLUMN transactions.net_amount_cad IS 'Always in CAD — for reporting and tax calculations';
+COMMENT ON COLUMN transactions.fx_rate_to_cad IS 'Exchange rate used at time of trade';
+COMMENT ON COLUMN transactions.paired_transaction_id IS 'Links FX pairs — CAD row links to USD row';
+COMMENT ON COLUMN transactions.import_hash IS 'SHA-256 of raw row — prevents duplicate imports';
+COMMENT ON COLUMN transactions.raw_data IS 'Original broker CSV row stored as JSON — enables re-parsing';
+
+-- ============================================================
+-- 14. HOLDINGS
+-- Derived from transactions. Recalculated on every import.
+-- One row per symbol per account.
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS holdings (
+    id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    account_id          UUID NOT NULL REFERENCES member_accounts(id) ON DELETE CASCADE,
+    symbol              TEXT NOT NULL,
+    asset_type          TEXT NOT NULL DEFAULT 'STOCK',
+    quantity_total      NUMERIC(18,8) NOT NULL DEFAULT 0,
+    quantity_free       NUMERIC(18,8) NOT NULL DEFAULT 0,
+    quantity_pledged    NUMERIC(18,8) NOT NULL DEFAULT 0,
+    acb_per_share       NUMERIC(18,6) NOT NULL DEFAULT 0,
+    total_acb           NUMERIC(18,2) NOT NULL DEFAULT 0,
+    currency            TEXT NOT NULL DEFAULT 'USD',
+    last_calculated_at  TIMESTAMPTZ,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_holding_account_symbol
+        UNIQUE (account_id, symbol),
+    CONSTRAINT chk_holding_asset_type
+        CHECK (asset_type IN ('STOCK', 'ETF', 'CRYPTO', 'OTHER'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_holdings_account_id
+    ON holdings(account_id);
+
+CREATE INDEX IF NOT EXISTS idx_holdings_symbol
+    ON holdings(symbol);
+
+CREATE TRIGGER trigger_holdings_updated_at
+    BEFORE UPDATE ON holdings
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+COMMENT ON TABLE holdings IS 'Derived positions — recalculated from transactions on every import';
+COMMENT ON COLUMN holdings.quantity_total IS 'All shares including pledged ones (covered calls)';
+COMMENT ON COLUMN holdings.quantity_free IS 'Shares available to trade = total - pledged';
+COMMENT ON COLUMN holdings.quantity_pledged IS 'Shares locked in open option contracts';
+COMMENT ON COLUMN holdings.acb_per_share IS 'Average cost basis per share in trade currency';
+COMMENT ON COLUMN holdings.total_acb IS 'Total cost basis = acb_per_share x quantity_total';
+
+-- ============================================================
+-- 15. CASH BALANCES
+-- CAD and USD cash per account.
+-- One row per currency per account.
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS cash_balances (
+    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    account_id      UUID NOT NULL REFERENCES member_accounts(id) ON DELETE CASCADE,
+    currency        TEXT NOT NULL,
+    balance_total   NUMERIC(18,2) NOT NULL DEFAULT 0,
+    balance_locked  NUMERIC(18,2) NOT NULL DEFAULT 0,
+    balance_free    NUMERIC(18,2) GENERATED ALWAYS AS (balance_total - balance_locked) STORED,
+    last_updated_at TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_cash_balance_account_currency
+        UNIQUE (account_id, currency),
+    CONSTRAINT chk_cash_currency
+        CHECK (currency IN ('CAD', 'USD', 'GBP', 'EUR', 'INR'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_cash_balances_account_id
+    ON cash_balances(account_id);
+
+CREATE TRIGGER trigger_cash_balances_updated_at
+    BEFORE UPDATE ON cash_balances
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+COMMENT ON TABLE cash_balances IS 'Cash per currency per account — updated on every import';
+COMMENT ON COLUMN cash_balances.balance_total IS 'All cash including locked amount';
+COMMENT ON COLUMN cash_balances.balance_locked IS 'Locked in cash secured puts';
+COMMENT ON COLUMN cash_balances.balance_free IS 'Available = total - locked (computed column)';
+
+-- ============================================================
+-- 16. OPTION CONTRACTS
+-- Options positions — created now for holdings/cash integrity.
+-- Full UI built in Phase 5.
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS option_contracts (
+    id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    account_id          UUID NOT NULL REFERENCES member_accounts(id) ON DELETE CASCADE,
+    underlying_symbol   TEXT NOT NULL,
+    contract_type       TEXT NOT NULL,
+    strike_price        NUMERIC(18,2) NOT NULL,
+    expiry_date         DATE NOT NULL,
+    contracts_qty       INTEGER NOT NULL DEFAULT 1,
+    shares_pledged      INTEGER NOT NULL DEFAULT 0,
+    cash_locked         NUMERIC(18,2) NOT NULL DEFAULT 0,
+    premium_received    NUMERIC(18,6) NOT NULL DEFAULT 0,
+    total_premium       NUMERIC(18,2) NOT NULL DEFAULT 0,
+    open_date           DATE NOT NULL,
+    status              TEXT NOT NULL DEFAULT 'OPEN',
+    close_date          DATE,
+    close_premium       NUMERIC(18,6),
+    net_pnl             NUMERIC(18,2),
+    rolled_to_id        UUID REFERENCES option_contracts(id),
+    notes               TEXT,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT chk_contract_type
+        CHECK (contract_type IN ('CALL', 'PUT')),
+    CONSTRAINT chk_option_status
+        CHECK (status IN ('OPEN', 'CLOSED', 'EXPIRED', 'ASSIGNED', 'ROLLED'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_option_contracts_account
+    ON option_contracts(account_id);
+
+CREATE INDEX IF NOT EXISTS idx_option_contracts_status
+    ON option_contracts(status)
+    WHERE status = 'OPEN';
+
+CREATE INDEX IF NOT EXISTS idx_option_contracts_expiry
+    ON option_contracts(expiry_date)
+    WHERE status = 'OPEN';
+
+CREATE TRIGGER trigger_option_contracts_updated_at
+    BEFORE UPDATE ON option_contracts
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+COMMENT ON TABLE option_contracts IS 'Options positions — used for pledged shares and locked cash in holdings/balances';
+COMMENT ON COLUMN option_contracts.shares_pledged IS 'contracts_qty x 100 for CALL positions';
+COMMENT ON COLUMN option_contracts.cash_locked IS 'strike x contracts_qty x 100 for PUT positions';
+COMMENT ON COLUMN option_contracts.rolled_to_id IS 'Points to new contract when position is rolled';
+
+-- Add FK from transactions to option_contracts now that table exists
+ALTER TABLE transactions
+    ADD CONSTRAINT fk_transactions_option_contract
+    FOREIGN KEY (option_contract_id)
+    REFERENCES option_contracts(id)
+    ON DELETE SET NULL;
+
+-- ============================================================
+-- 17. PRICE CACHE
+-- Global shared price cache — all users share this.
+-- Updated by APScheduler background job.
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS price_cache (
+    id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    symbol              TEXT NOT NULL,
+    currency            TEXT NOT NULL,
+    price               NUMERIC(18,6),
+    previous_close      NUMERIC(18,6),
+    day_change          NUMERIC(18,6),
+    day_change_pct      NUMERIC(8,4),
+    week_52_high        NUMERIC(18,6),
+    week_52_low         NUMERIC(18,6),
+    source              TEXT NOT NULL DEFAULT 'twelvedata',
+    fetched_at          TIMESTAMPTZ,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_price_cache_symbol_currency
+        UNIQUE (symbol, currency)
+);
+
+CREATE INDEX IF NOT EXISTS idx_price_cache_symbol
+    ON price_cache(symbol);
+
+CREATE INDEX IF NOT EXISTS idx_price_cache_fetched_at
+    ON price_cache(fetched_at DESC);
+
+CREATE TRIGGER trigger_price_cache_updated_at
+    BEFORE UPDATE ON price_cache
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+COMMENT ON TABLE price_cache IS 'Global price cache shared across all users — updated by background scheduler';
+COMMENT ON COLUMN price_cache.source IS 'Price data source: twelvedata or manual';
+
+-- ============================================================
+-- 18. APP SETTINGS
+-- Super admin configurable key-value settings.
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS app_settings (
+    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    setting_key     TEXT NOT NULL UNIQUE,
+    setting_value   TEXT NOT NULL,
+    description     TEXT,
+    updated_by      UUID REFERENCES users(id) ON DELETE SET NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TRIGGER trigger_app_settings_updated_at
+    BEFORE UPDATE ON app_settings
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+COMMENT ON TABLE app_settings IS 'Super admin configurable settings — price refresh, feature flags etc';
+
+-- ============================================================
 -- MORE TABLES WILL BE ADDED HERE AS WE BUILD FEATURES
 -- ============================================================

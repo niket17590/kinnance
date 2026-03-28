@@ -21,6 +21,7 @@ SessionLocal = sessionmaker(
 # Base class for all SQLAlchemy models
 Base = declarative_base()
 
+
 def get_db():
     """
     Dependency function — used in every API endpoint that needs DB access.

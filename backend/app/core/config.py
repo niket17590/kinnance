@@ -8,6 +8,7 @@ load_dotenv(".env")
 _env = os.getenv("APP_ENV", "development")
 load_dotenv(f".env.{_env}", override=True)
 
+
 class Settings(BaseSettings):
     # App
     APP_NAME: str = "Kinnance"
@@ -36,8 +37,10 @@ class Settings(BaseSettings):
         case_sensitive = True
         env_file_encoding = "utf-8"
 
+
 @lru_cache()
 def get_settings() -> Settings:
     return Settings()
+
 
 settings = get_settings()

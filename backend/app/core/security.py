@@ -7,11 +7,13 @@ import jwt
 # HTTP Bearer token extractor
 security = HTTPBearer()
 
+
 def get_supabase_client() -> Client:
     return create_client(
         settings.SUPABASE_URL,
         settings.SUPABASE_SERVICE_KEY
     )
+
 
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security)
@@ -41,8 +43,9 @@ async def get_current_user(
             detail="Could not validate credentials"
         )
 
+
 async def get_current_db_user(
-    current_auth_user = Depends(get_current_user)
+    current_auth_user=Depends(get_current_user)
 ):
     """
     Gets the full user record from our public.users table.
@@ -68,8 +71,9 @@ async def get_current_db_user(
     finally:
         db.close()
 
+
 async def require_super_admin(
-    current_user = Depends(get_current_db_user)
+    current_user=Depends(get_current_db_user)
 ):
     """
     Raises 403 if user is not super admin.

@@ -351,5 +351,342 @@ CREATE POLICY contribution_room_super_admin
     );
 
 -- ============================================================
+-- BROKER ACCOUNT MAPPINGS — owner of account only
+-- ============================================================
+
+ALTER TABLE broker_account_mappings ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY broker_mappings_select_own
+    ON broker_account_mappings FOR SELECT
+    USING (
+        account_id IN (
+            SELECT ma.id FROM member_accounts ma
+            JOIN members m ON ma.member_id = m.id
+            WHERE m.owner_id = (SELECT id FROM users WHERE auth_user_id = auth.uid())
+        )
+    );
+
+CREATE POLICY broker_mappings_insert_own
+    ON broker_account_mappings FOR INSERT
+    WITH CHECK (
+        account_id IN (
+            SELECT ma.id FROM member_accounts ma
+            JOIN members m ON ma.member_id = m.id
+            WHERE m.owner_id = (SELECT id FROM users WHERE auth_user_id = auth.uid())
+        )
+    );
+
+CREATE POLICY broker_mappings_delete_own
+    ON broker_account_mappings FOR DELETE
+    USING (
+        account_id IN (
+            SELECT ma.id FROM member_accounts ma
+            JOIN members m ON ma.member_id = m.id
+            WHERE m.owner_id = (SELECT id FROM users WHERE auth_user_id = auth.uid())
+        )
+    );
+
+CREATE POLICY broker_mappings_super_admin
+    ON broker_account_mappings FOR ALL
+    USING (
+        EXISTS (
+            SELECT 1 FROM users
+            WHERE auth_user_id = auth.uid()
+            AND is_super_admin = TRUE
+        )
+    );
+
+-- ============================================================
+-- IMPORT BATCHES — owner only
+-- ============================================================
+
+ALTER TABLE import_batches ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY import_batches_select_own
+    ON import_batches FOR SELECT
+    USING (owner_id = (SELECT id FROM users WHERE auth_user_id = auth.uid()));
+
+CREATE POLICY import_batches_insert_own
+    ON import_batches FOR INSERT
+    WITH CHECK (owner_id = (SELECT id FROM users WHERE auth_user_id = auth.uid()));
+
+CREATE POLICY import_batches_update_own
+    ON import_batches FOR UPDATE
+    USING (owner_id = (SELECT id FROM users WHERE auth_user_id = auth.uid()));
+
+CREATE POLICY import_batches_super_admin
+    ON import_batches FOR ALL
+    USING (EXISTS (
+        SELECT 1 FROM users
+        WHERE auth_user_id = auth.uid()
+        AND is_super_admin = TRUE
+    ));
+
+-- ============================================================
+-- TRANSACTIONS — owner of account only
+-- ============================================================
+
+ALTER TABLE transactions ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY transactions_select_own
+    ON transactions FOR SELECT
+    USING (
+        account_id IN (
+            SELECT ma.id FROM member_accounts ma
+            JOIN members m ON ma.member_id = m.id
+            WHERE m.owner_id = (SELECT id FROM users WHERE auth_user_id = auth.uid())
+        )
+    );
+
+CREATE POLICY transactions_insert_own
+    ON transactions FOR INSERT
+    WITH CHECK (
+        account_id IN (
+            SELECT ma.id FROM member_accounts ma
+            JOIN members m ON ma.member_id = m.id
+            WHERE m.owner_id = (SELECT id FROM users WHERE auth_user_id = auth.uid())
+        )
+    );
+
+CREATE POLICY transactions_update_own
+    ON transactions FOR UPDATE
+    USING (
+        account_id IN (
+            SELECT ma.id FROM member_accounts ma
+            JOIN members m ON ma.member_id = m.id
+            WHERE m.owner_id = (SELECT id FROM users WHERE auth_user_id = auth.uid())
+        )
+    );
+
+CREATE POLICY transactions_delete_own
+    ON transactions FOR DELETE
+    USING (
+        account_id IN (
+            SELECT ma.id FROM member_accounts ma
+            JOIN members m ON ma.member_id = m.id
+            WHERE m.owner_id = (SELECT id FROM users WHERE auth_user_id = auth.uid())
+        )
+    );
+
+CREATE POLICY transactions_super_admin
+    ON transactions FOR ALL
+    USING (
+        EXISTS (
+            SELECT 1 FROM users
+            WHERE auth_user_id = auth.uid()
+            AND is_super_admin = TRUE
+        )
+    );
+
+-- ============================================================
+-- HOLDINGS — owner of account only
+-- ============================================================
+
+ALTER TABLE holdings ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY holdings_select_own
+    ON holdings FOR SELECT
+    USING (
+        account_id IN (
+            SELECT ma.id FROM member_accounts ma
+            JOIN members m ON ma.member_id = m.id
+            WHERE m.owner_id = (SELECT id FROM users WHERE auth_user_id = auth.uid())
+        )
+    );
+
+CREATE POLICY holdings_insert_own
+    ON holdings FOR INSERT
+    WITH CHECK (
+        account_id IN (
+            SELECT ma.id FROM member_accounts ma
+            JOIN members m ON ma.member_id = m.id
+            WHERE m.owner_id = (SELECT id FROM users WHERE auth_user_id = auth.uid())
+        )
+    );
+
+CREATE POLICY holdings_update_own
+    ON holdings FOR UPDATE
+    USING (
+        account_id IN (
+            SELECT ma.id FROM member_accounts ma
+            JOIN members m ON ma.member_id = m.id
+            WHERE m.owner_id = (SELECT id FROM users WHERE auth_user_id = auth.uid())
+        )
+    );
+
+CREATE POLICY holdings_delete_own
+    ON holdings FOR DELETE
+    USING (
+        account_id IN (
+            SELECT ma.id FROM member_accounts ma
+            JOIN members m ON ma.member_id = m.id
+            WHERE m.owner_id = (SELECT id FROM users WHERE auth_user_id = auth.uid())
+        )
+    );
+
+CREATE POLICY holdings_super_admin
+    ON holdings FOR ALL
+    USING (
+        EXISTS (
+            SELECT 1 FROM users
+            WHERE auth_user_id = auth.uid()
+            AND is_super_admin = TRUE
+        )
+    );
+
+-- ============================================================
+-- CASH BALANCES — owner of account only
+-- ============================================================
+
+ALTER TABLE cash_balances ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY cash_balances_select_own
+    ON cash_balances FOR SELECT
+    USING (
+        account_id IN (
+            SELECT ma.id FROM member_accounts ma
+            JOIN members m ON ma.member_id = m.id
+            WHERE m.owner_id = (SELECT id FROM users WHERE auth_user_id = auth.uid())
+        )
+    );
+
+CREATE POLICY cash_balances_insert_own
+    ON cash_balances FOR INSERT
+    WITH CHECK (
+        account_id IN (
+            SELECT ma.id FROM member_accounts ma
+            JOIN members m ON ma.member_id = m.id
+            WHERE m.owner_id = (SELECT id FROM users WHERE auth_user_id = auth.uid())
+        )
+    );
+
+CREATE POLICY cash_balances_update_own
+    ON cash_balances FOR UPDATE
+    USING (
+        account_id IN (
+            SELECT ma.id FROM member_accounts ma
+            JOIN members m ON ma.member_id = m.id
+            WHERE m.owner_id = (SELECT id FROM users WHERE auth_user_id = auth.uid())
+        )
+    );
+
+CREATE POLICY cash_balances_delete_own
+    ON cash_balances FOR DELETE
+    USING (
+        account_id IN (
+            SELECT ma.id FROM member_accounts ma
+            JOIN members m ON ma.member_id = m.id
+            WHERE m.owner_id = (SELECT id FROM users WHERE auth_user_id = auth.uid())
+        )
+    );
+
+CREATE POLICY cash_balances_super_admin
+    ON cash_balances FOR ALL
+    USING (
+        EXISTS (
+            SELECT 1 FROM users
+            WHERE auth_user_id = auth.uid()
+            AND is_super_admin = TRUE
+        )
+    );
+
+-- ============================================================
+-- OPTION CONTRACTS — owner of account only
+-- ============================================================
+
+ALTER TABLE option_contracts ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY option_contracts_select_own
+    ON option_contracts FOR SELECT
+    USING (
+        account_id IN (
+            SELECT ma.id FROM member_accounts ma
+            JOIN members m ON ma.member_id = m.id
+            WHERE m.owner_id = (SELECT id FROM users WHERE auth_user_id = auth.uid())
+        )
+    );
+
+CREATE POLICY option_contracts_insert_own
+    ON option_contracts FOR INSERT
+    WITH CHECK (
+        account_id IN (
+            SELECT ma.id FROM member_accounts ma
+            JOIN members m ON ma.member_id = m.id
+            WHERE m.owner_id = (SELECT id FROM users WHERE auth_user_id = auth.uid())
+        )
+    );
+
+CREATE POLICY option_contracts_update_own
+    ON option_contracts FOR UPDATE
+    USING (
+        account_id IN (
+            SELECT ma.id FROM member_accounts ma
+            JOIN members m ON ma.member_id = m.id
+            WHERE m.owner_id = (SELECT id FROM users WHERE auth_user_id = auth.uid())
+        )
+    );
+
+CREATE POLICY option_contracts_delete_own
+    ON option_contracts FOR DELETE
+    USING (
+        account_id IN (
+            SELECT ma.id FROM member_accounts ma
+            JOIN members m ON ma.member_id = m.id
+            WHERE m.owner_id = (SELECT id FROM users WHERE auth_user_id = auth.uid())
+        )
+    );
+
+CREATE POLICY option_contracts_super_admin
+    ON option_contracts FOR ALL
+    USING (
+        EXISTS (
+            SELECT 1 FROM users
+            WHERE auth_user_id = auth.uid()
+            AND is_super_admin = TRUE
+        )
+    );
+
+-- ============================================================
+-- PRICE CACHE — public read, super admin write
+-- All users can read prices, only super admin can modify
+-- ============================================================
+
+ALTER TABLE price_cache ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY price_cache_select_all
+    ON price_cache FOR SELECT
+    USING (TRUE);
+
+CREATE POLICY price_cache_modify_super_admin
+    ON price_cache FOR ALL
+    USING (
+        EXISTS (
+            SELECT 1 FROM users
+            WHERE auth_user_id = auth.uid()
+            AND is_super_admin = TRUE
+        )
+    );
+
+-- ============================================================
+-- APP SETTINGS — public read, super admin write
+-- ============================================================
+
+ALTER TABLE app_settings ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY app_settings_select_all
+    ON app_settings FOR SELECT
+    USING (TRUE);
+
+CREATE POLICY app_settings_modify_super_admin
+    ON app_settings FOR ALL
+    USING (
+        EXISTS (
+            SELECT 1 FROM users
+            WHERE auth_user_id = auth.uid()
+            AND is_super_admin = TRUE
+        )
+    );
+
+-- ============================================================
 -- MORE RLS POLICIES ADDED HERE IN PHASE 3
 -- ============================================================

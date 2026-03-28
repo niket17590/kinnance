@@ -3,6 +3,7 @@ from typing import Optional, List
 from datetime import datetime
 from uuid import UUID
 
+
 class CircleCreate(BaseModel):
     name: str
     region_code: str
@@ -17,13 +18,16 @@ class CircleCreate(BaseModel):
             }
         }
 
+
 class CircleUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     is_active: Optional[bool] = None
 
+
 class CircleAccountAdd(BaseModel):
     account_id: UUID
+
 
 class CircleResponse(BaseModel):
     id: UUID

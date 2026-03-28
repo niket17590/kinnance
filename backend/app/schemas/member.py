@@ -7,6 +7,7 @@ from uuid import UUID
 # Request schemas — what the API accepts
 # ============================================================
 
+
 class MemberCreate(BaseModel):
     display_name: str
     member_type: str = "PERSON"
@@ -21,6 +22,7 @@ class MemberCreate(BaseModel):
             }
         }
 
+
 class MemberUpdate(BaseModel):
     display_name: Optional[str] = None
     member_type: Optional[str] = None
@@ -30,6 +32,7 @@ class MemberUpdate(BaseModel):
 # ============================================================
 # Response schemas — what the API returns
 # ============================================================
+
 
 class MemberResponse(BaseModel):
     id: UUID

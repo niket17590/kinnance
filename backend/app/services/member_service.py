@@ -4,6 +4,7 @@ from uuid import UUID
 from fastapi import HTTPException, status
 from app.schemas.member import MemberCreate, MemberUpdate
 
+
 def get_all(db: Session, owner_id: UUID):
     """Get all active members for a user"""
     result = db.execute(
@@ -16,6 +17,7 @@ def get_all(db: Session, owner_id: UUID):
         {"owner_id": str(owner_id)}
     ).fetchall()
     return result
+
 
 def get_by_id(db: Session, member_id: UUID, owner_id: UUID):
     """Get a single member by ID — must belong to owner"""
@@ -34,6 +36,7 @@ def get_by_id(db: Session, member_id: UUID, owner_id: UUID):
             detail="Member not found"
         )
     return result
+
 
 def create(db: Session, data: MemberCreate, owner_id: UUID):
     """Create a new member"""
@@ -59,6 +62,7 @@ def create(db: Session, data: MemberCreate, owner_id: UUID):
     ).fetchone()
     db.commit()
     return result
+
 
 def update(db: Session, member_id: UUID, data: MemberUpdate, owner_id: UUID):
     """Update a member — must belong to owner"""
@@ -102,6 +106,7 @@ def update(db: Session, member_id: UUID, data: MemberUpdate, owner_id: UUID):
     ).fetchone()
     db.commit()
     return result
+
 
 def delete(db: Session, member_id: UUID, owner_id: UUID):
     """Soft delete — sets is_active to false"""

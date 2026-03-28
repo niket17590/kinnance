@@ -12,6 +12,7 @@ router = APIRouter(
     tags=["Circles"]
 )
 
+
 @router.get("", response_model=List[CircleResponse])
 async def get_circles(
     db: Session = Depends(get_db),
@@ -19,6 +20,7 @@ async def get_circles(
 ):
     """Get all circles for the current user"""
     return circle_service.get_all(db, current_user.id)
+
 
 @router.get("/{circle_id}", response_model=CircleResponse)
 async def get_circle(
@@ -29,6 +31,7 @@ async def get_circle(
     """Get a single circle by ID"""
     return circle_service.get_by_id(db, circle_id, current_user.id)
 
+
 @router.post("", response_model=CircleResponse, status_code=201)
 async def create_circle(
     data: CircleCreate,
@@ -37,6 +40,7 @@ async def create_circle(
 ):
     """Create a new circle"""
     return circle_service.create(db, data, current_user.id)
+
 
 @router.put("/{circle_id}", response_model=CircleResponse)
 async def update_circle(
@@ -48,6 +52,7 @@ async def update_circle(
     """Update a circle"""
     return circle_service.update(db, circle_id, data, current_user.id)
 
+
 @router.delete("/{circle_id}")
 async def delete_circle(
     circle_id: UUID,
@@ -56,6 +61,7 @@ async def delete_circle(
 ):
     """Soft delete a circle"""
     return circle_service.delete(db, circle_id, current_user.id)
+
 
 @router.get("/{circle_id}/accounts")
 async def get_circle_accounts(
@@ -66,6 +72,7 @@ async def get_circle_accounts(
     """Get all accounts in a circle with member details"""
     return circle_service.get_accounts(db, circle_id, current_user.id)
 
+
 @router.post("/{circle_id}/accounts")
 async def add_account_to_circle(
     circle_id: UUID,
@@ -74,7 +81,9 @@ async def add_account_to_circle(
     current_user=Depends(get_current_db_user)
 ):
     """Add an account to a circle"""
-    return circle_service.add_account(db, circle_id, data.account_id, current_user.id)
+    return circle_service.add_account(
+        db, circle_id, data.account_id, current_user.id)
+
 
 @router.delete("/{circle_id}/accounts/{account_id}")
 async def remove_account_from_circle(
@@ -84,4 +93,5 @@ async def remove_account_from_circle(
     current_user=Depends(get_current_db_user)
 ):
     """Remove an account from a circle"""
-    return circle_service.remove_account(db, circle_id, account_id, current_user.id)
+    return circle_service.remove_account(
+        db, circle_id, account_id, current_user.id)

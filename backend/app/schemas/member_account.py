@@ -3,6 +3,7 @@ from typing import Optional
 from datetime import datetime
 from uuid import UUID
 
+
 class MemberAccountCreate(BaseModel):
     member_id: UUID
     broker_code: str
@@ -23,10 +24,12 @@ class MemberAccountCreate(BaseModel):
             }
         }
 
+
 class MemberAccountUpdate(BaseModel):
     nickname: Optional[str] = None
     account_number: Optional[str] = None
     is_active: Optional[bool] = None
+
 
 class MemberAccountResponse(BaseModel):
     id: UUID

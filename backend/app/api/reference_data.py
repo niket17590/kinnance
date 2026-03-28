@@ -9,6 +9,7 @@ router = APIRouter(
     tags=["Reference Data"]
 )
 
+
 @router.get("/regions")
 async def get_regions(
     db: Session = Depends(get_db),
@@ -19,6 +20,7 @@ async def get_regions(
         text("SELECT * FROM regions WHERE is_active = TRUE ORDER BY name")
     ).fetchall()
     return [dict(row._mapping) for row in result]
+
 
 @router.get("/brokers")
 async def get_brokers(
@@ -42,6 +44,7 @@ async def get_brokers(
             text("SELECT * FROM brokers WHERE is_active = TRUE ORDER BY name")
         ).fetchall()
     return [dict(row._mapping) for row in result]
+
 
 @router.get("/account-types")
 async def get_account_types(
@@ -73,6 +76,7 @@ async def get_account_types(
     result = db.execute(text(query), params).fetchall()
     return [dict(row._mapping) for row in result]
 
+
 @router.get("/currencies")
 async def get_currencies(
     db: Session = Depends(get_db),
@@ -83,6 +87,7 @@ async def get_currencies(
         text("SELECT * FROM currencies WHERE is_active = TRUE ORDER BY code")
     ).fetchall()
     return [dict(row._mapping) for row in result]
+
 
 @router.get("/account-type-limits/{account_type_code}")
 async def get_account_type_limits(

@@ -12,6 +12,7 @@ router = APIRouter(
     tags=["Members"]
 )
 
+
 @router.get("", response_model=List[MemberResponse])
 async def get_members(
     db: Session = Depends(get_db),
@@ -19,6 +20,7 @@ async def get_members(
 ):
     """Get all members for the current user"""
     return member_service.get_all(db, current_user.id)
+
 
 @router.get("/{member_id}", response_model=MemberResponse)
 async def get_member(
@@ -29,6 +31,7 @@ async def get_member(
     """Get a single member by ID"""
     return member_service.get_by_id(db, member_id, current_user.id)
 
+
 @router.post("", response_model=MemberResponse, status_code=201)
 async def create_member(
     data: MemberCreate,
@@ -37,6 +40,7 @@ async def create_member(
 ):
     """Create a new member"""
     return member_service.create(db, data, current_user.id)
+
 
 @router.put("/{member_id}", response_model=MemberResponse)
 async def update_member(
@@ -47,6 +51,7 @@ async def update_member(
 ):
     """Update a member"""
     return member_service.update(db, member_id, data, current_user.id)
+
 
 @router.delete("/{member_id}")
 async def delete_member(

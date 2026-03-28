@@ -4,6 +4,7 @@ from uuid import UUID
 from fastapi import HTTPException, status
 from app.schemas.member_account import MemberAccountCreate, MemberAccountUpdate
 
+
 def verify_member_ownership(db: Session, member_id: UUID, owner_id: UUID):
     """Verify the member belongs to the current user"""
     result = db.execute(
@@ -23,7 +24,9 @@ def verify_member_ownership(db: Session, member_id: UUID, owner_id: UUID):
         )
     return result
 
-def verify_broker_and_account_type(db: Session, broker_code: str, account_type_code: str, region_code: str, member_type: str):
+
+def verify_broker_and_account_type(
+        db: Session, broker_code: str, account_type_code: str, region_code: str, member_type: str):
     """Validate broker and account type exist and are valid for the region and member type"""
     broker = db.execute(
         text("""
@@ -63,6 +66,7 @@ def verify_broker_and_account_type(db: Session, broker_code: str, account_type_c
             detail=f"Account type {account_type_code} is not available for {member_type} members"
         )
 
+
 def get_all(db: Session, owner_id: UUID, member_id: UUID = None):
     """Get all accounts for a user — optionally filter by member"""
     if member_id:
@@ -90,6 +94,7 @@ def get_all(db: Session, owner_id: UUID, member_id: UUID = None):
         ).fetchall()
     return result
 
+
 def get_by_id(db: Session, account_id: UUID, owner_id: UUID):
     """Get a single account — must belong to owner via member"""
     result = db.execute(
@@ -108,6 +113,7 @@ def get_by_id(db: Session, account_id: UUID, owner_id: UUID):
             detail="Account not found"
         )
     return result
+
 
 def create(db: Session, data: MemberAccountCreate, owner_id: UUID):
     """Create a new member account"""
@@ -165,7 +171,9 @@ def create(db: Session, data: MemberAccountCreate, owner_id: UUID):
             detail="Could not create account"
         )
 
-def update(db: Session, account_id: UUID, data: MemberAccountUpdate, owner_id: UUID):
+
+def update(db: Session, account_id: UUID,
+           data: MemberAccountUpdate, owner_id: UUID):
     """Update an account"""
     get_by_id(db, account_id, owner_id)
 
@@ -197,6 +205,7 @@ def update(db: Session, account_id: UUID, data: MemberAccountUpdate, owner_id: U
     ).fetchone()
     db.commit()
     return result
+
 
 def delete(db: Session, account_id: UUID, owner_id: UUID):
     """Soft delete an account"""

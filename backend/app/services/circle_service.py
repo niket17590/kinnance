@@ -4,6 +4,7 @@ from uuid import UUID
 from fastapi import HTTPException, status
 from app.schemas.circle import CircleCreate, CircleUpdate
 
+
 def get_all(db: Session, owner_id: UUID):
     """Get all active circles for a user"""
     result = db.execute(
@@ -20,6 +21,7 @@ def get_all(db: Session, owner_id: UUID):
         {"owner_id": str(owner_id)}
     ).fetchall()
     return [dict(row._mapping) for row in result]
+
 
 def get_by_id(db: Session, circle_id: UUID, owner_id: UUID):
     """Get a single circle by ID"""
@@ -38,6 +40,7 @@ def get_by_id(db: Session, circle_id: UUID, owner_id: UUID):
             detail="Circle not found"
         )
     return result
+
 
 def create(db: Session, data: CircleCreate, owner_id: UUID):
     """Create a new circle"""
@@ -68,6 +71,7 @@ def create(db: Session, data: CircleCreate, owner_id: UUID):
     ).fetchone()
     db.commit()
     return result
+
 
 def update(db: Session, circle_id: UUID, data: CircleUpdate, owner_id: UUID):
     """Update a circle"""
@@ -103,6 +107,7 @@ def update(db: Session, circle_id: UUID, data: CircleUpdate, owner_id: UUID):
     db.commit()
     return result
 
+
 def delete(db: Session, circle_id: UUID, owner_id: UUID):
     """Soft delete a circle"""
     get_by_id(db, circle_id, owner_id)
@@ -117,6 +122,7 @@ def delete(db: Session, circle_id: UUID, owner_id: UUID):
     )
     db.commit()
     return {"message": "Circle deleted successfully"}
+
 
 def get_accounts(db: Session, circle_id: UUID, owner_id: UUID):
     """Get all accounts tagged to a circle with full details"""
@@ -152,7 +158,9 @@ def get_accounts(db: Session, circle_id: UUID, owner_id: UUID):
 
     return [dict(row._mapping) for row in result]
 
-def add_account(db: Session, circle_id: UUID, account_id: UUID, owner_id: UUID):
+
+def add_account(db: Session, circle_id: UUID,
+                account_id: UUID, owner_id: UUID):
     """Tag an account to a circle — validates same region"""
     circle = get_by_id(db, circle_id, owner_id)
 
@@ -178,7 +186,9 @@ def add_account(db: Session, circle_id: UUID, account_id: UUID, owner_id: UUID):
     if account.region_code != circle.region_code:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Account region ({account.region_code}) does not match circle region ({circle.region_code})"
+            detail=f"Account region ({
+                account.region_code}) does not match circle region ({
+                circle.region_code})"
         )
 
     try:
@@ -203,7 +213,9 @@ def add_account(db: Session, circle_id: UUID, account_id: UUID, owner_id: UUID):
             detail="Could not add account to circle"
         )
 
-def remove_account(db: Session, circle_id: UUID, account_id: UUID, owner_id: UUID):
+
+def remove_account(db: Session, circle_id: UUID,
+                   account_id: UUID, owner_id: UUID):
     """Remove an account from a circle"""
     get_by_id(db, circle_id, owner_id)
 

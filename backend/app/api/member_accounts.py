@@ -12,6 +12,7 @@ router = APIRouter(
     tags=["Member Accounts"]
 )
 
+
 @router.get("", response_model=List[MemberAccountResponse])
 async def get_accounts(
     member_id: Optional[UUID] = None,
@@ -20,6 +21,7 @@ async def get_accounts(
 ):
     """Get all accounts — optionally filter by member"""
     return member_account_service.get_all(db, current_user.id, member_id)
+
 
 @router.get("/{account_id}", response_model=MemberAccountResponse)
 async def get_account(
@@ -30,6 +32,7 @@ async def get_account(
     """Get a single account by ID"""
     return member_account_service.get_by_id(db, account_id, current_user.id)
 
+
 @router.post("", response_model=MemberAccountResponse, status_code=201)
 async def create_account(
     data: MemberAccountCreate,
@@ -38,6 +41,7 @@ async def create_account(
 ):
     """Create a new account for a member"""
     return member_account_service.create(db, data, current_user.id)
+
 
 @router.put("/{account_id}", response_model=MemberAccountResponse)
 async def update_account(
@@ -48,6 +52,7 @@ async def update_account(
 ):
     """Update an account"""
     return member_account_service.update(db, account_id, data, current_user.id)
+
 
 @router.delete("/{account_id}")
 async def delete_account(
