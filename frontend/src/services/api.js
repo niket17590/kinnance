@@ -91,4 +91,12 @@ export const referenceApi = {
   getCurrencies: () => api.get('/reference/currencies')
 }
 
+// ============================================================
+// Transactions
+// ============================================================
+
+export const transactionsApi = {
+  getAll: (params = {}) => api.get('/transactions', { params })
+}
+
 export default api

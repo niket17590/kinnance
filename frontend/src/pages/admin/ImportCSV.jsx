@@ -103,8 +103,12 @@ function ImportCSV() {
       setParseResult(result)
       setStep(3)
       if (result.status === 'NEEDS_MAPPING') {
+        const suggestions = result.account_number_suggestions || {}
         const initMappings = {}
-        result.unmatched_accounts.forEach(id => { initMappings[id] = '' })
+        result.unmatched_accounts.forEach(id => {
+          // Pre-fill with account number match if found
+          initMappings[id] = suggestions[id] || ''
+        })
         setMappings(initMappings)
         setUnmatchedAccounts(result.unmatched_accounts)
         setAvailableAccounts(result.available_accounts)

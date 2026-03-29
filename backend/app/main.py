@@ -8,6 +8,8 @@ import secrets
 
 from app.core.config import get_settings
 from app.api import members, member_accounts, circles, reference_data, imports
+from app.api import transactions
+from app.api import holdings
 
 settings = get_settings()
 
@@ -104,3 +106,5 @@ app.include_router(member_accounts.router, prefix="/api/v1")
 app.include_router(circles.router, prefix="/api/v1")
 app.include_router(reference_data.router, prefix="/api/v1")
 app.include_router(imports.router, prefix="/api/v1")
+app.include_router(transactions.router, prefix="/api/v1")
+app.include_router(holdings.router, prefix="/api/v1")

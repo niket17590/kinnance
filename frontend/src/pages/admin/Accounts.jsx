@@ -4,7 +4,7 @@ import {
   membersApi,
   referenceApi,
 } from "../../services/api";
-
+import { useFilters } from "../../context/FilterContext";
 function AccountModal({ account, members, regions, onSave, onClose }) {
   const [brokers, setBrokers] = useState([]);
   const [accountTypes, setAccountTypes] = useState([]);
@@ -373,6 +373,7 @@ function Accounts() {
   const [showModal, setShowModal] = useState(false);
   const [editingAccount, setEditingAccount] = useState(null);
   const [refDataLoaded, setRefDataLoaded] = useState(false);
+  const { refreshCircles, refreshFilterOptions } = useFilters()
 
   const fetchAccounts = async () => {
     try {
@@ -416,6 +417,8 @@ function Accounts() {
     try {
       await memberAccountsApi.delete(account.id);
       fetchAccounts();
+      refreshCircles();
+      refreshFilterOptions();
     } catch {
       alert("Failed to delete account");
     }
@@ -425,6 +428,8 @@ function Accounts() {
     setShowModal(false);
     setEditingAccount(null);
     fetchAccounts();
+    refreshCircles();
+    refreshFilterOptions();
   };
 
   const taxCategoryColor = (tax) => {

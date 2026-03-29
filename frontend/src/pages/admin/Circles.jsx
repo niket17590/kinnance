@@ -5,6 +5,7 @@ import {
   membersApi,
   referenceApi,
 } from "../../services/api";
+import { useFilters } from "../../context/FilterContext";
 
 function CircleModal({ circle, onSave, onClose }) {
   const [regions, setRegions] = useState([]);
@@ -592,6 +593,7 @@ function CircleCard({ circle, onEdit, onDelete, onUpdate }) {
   const [loadingAccounts, setLoadingAccounts] = useState(false);
   const [showAddModal, setShowAddModal] = useState(false);
   const [fetched, setFetched] = useState(false);
+  const { refreshCircles, refreshFilterOptions } = useFilters();
 
   const taxLabel = (tax) => {
     const map = {
@@ -970,6 +972,8 @@ function CircleCard({ circle, onEdit, onDelete, onUpdate }) {
           onUpdate={() => {
             fetchAccounts();
             onUpdate();
+            refreshCircles();
+            refreshFilterOptions();
           }}
         />
       )}
@@ -983,7 +987,7 @@ function Circles() {
   const [error, setError] = useState("");
   const [showModal, setShowModal] = useState(false);
   const [editingCircle, setEditingCircle] = useState(null);
-
+  const { refreshCircles } = useFilters();
   const fetchCircles = async () => {
     try {
       setLoading(true);
@@ -1010,6 +1014,7 @@ function Circles() {
     try {
       await circlesApi.delete(circle.id);
       fetchCircles();
+      refreshCircles();
     } catch {
       alert("Failed to delete circle");
     }
@@ -1019,6 +1024,7 @@ function Circles() {
     setShowModal(false);
     setEditingCircle(null);
     fetchCircles();
+    refreshCircles();
   };
 
   return (
@@ -1163,7 +1169,10 @@ function Circles() {
                 setShowModal(true);
               }}
               onDelete={handleDelete}
-              onUpdate={fetchCircles}
+              onUpdate={() => {
+                fetchCircles();
+                refreshCircles();
+              }}
             />
           ))}
         </div>
