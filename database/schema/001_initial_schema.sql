@@ -536,44 +536,59 @@ COMMENT ON COLUMN transactions.raw_data IS 'Original broker CSV row stored as JS
 -- Derived from transactions. Recalculated on every import.
 -- One row per symbol per account.
 -- ============================================================
+    CREATE TABLE holdings (
+        id                      UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        account_id              UUID NOT NULL REFERENCES member_accounts(id) ON DELETE CASCADE,
+        symbol                  TEXT NOT NULL,
+        asset_type              TEXT NOT NULL DEFAULT 'STOCK',
 
-CREATE TABLE IF NOT EXISTS holdings (
-    id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    account_id          UUID NOT NULL REFERENCES member_accounts(id) ON DELETE CASCADE,
-    symbol              TEXT NOT NULL,
-    asset_type          TEXT NOT NULL DEFAULT 'STOCK',
-    quantity_total      NUMERIC(18,8) NOT NULL DEFAULT 0,
-    quantity_free       NUMERIC(18,8) NOT NULL DEFAULT 0,
-    quantity_pledged    NUMERIC(18,8) NOT NULL DEFAULT 0,
-    acb_per_share       NUMERIC(18,6) NOT NULL DEFAULT 0,
-    total_acb           NUMERIC(18,2) NOT NULL DEFAULT 0,
-    currency            TEXT NOT NULL DEFAULT 'USD',
-    last_calculated_at  TIMESTAMPTZ,
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT uq_holding_account_symbol
-        UNIQUE (account_id, symbol),
-    CONSTRAINT chk_holding_asset_type
-        CHECK (asset_type IN ('STOCK', 'ETF', 'CRYPTO', 'OTHER'))
-);
+        -- Position state
+        is_position_open        BOOLEAN NOT NULL DEFAULT TRUE,
+        quantity_total          NUMERIC(18,8) NOT NULL DEFAULT 0,
+        quantity_free           NUMERIC(18,8) NOT NULL DEFAULT 0,
+        quantity_pledged        NUMERIC(18,8) NOT NULL DEFAULT 0,
 
-CREATE INDEX IF NOT EXISTS idx_holdings_account_id
-    ON holdings(account_id);
+        -- ACB tracking
+        acb_per_share           NUMERIC(18,6) NOT NULL DEFAULT 0,
+        total_acb               NUMERIC(18,2) NOT NULL DEFAULT 0,
+        currency                TEXT NOT NULL DEFAULT 'USD',
 
-CREATE INDEX IF NOT EXISTS idx_holdings_symbol
-    ON holdings(symbol);
+        -- Realized G/L (accumulated across all sells, never reset)
+        total_proceeds          NUMERIC(18,2) NOT NULL DEFAULT 0,
+        total_cost_sold         NUMERIC(18,2) NOT NULL DEFAULT 0,
+        realized_gain_loss      NUMERIC(18,2) NOT NULL DEFAULT 0,
 
-CREATE TRIGGER trigger_holdings_updated_at
-    BEFORE UPDATE ON holdings
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+        -- Unrealized G/L (updated by price scheduler, null if no price)
+        current_price           NUMERIC(18,6),
+        unrealized_gain_loss    NUMERIC(18,2),
+        unrealized_gain_loss_pct NUMERIC(8,4),
+        price_updated_at        TIMESTAMPTZ,
 
-COMMENT ON TABLE holdings IS 'Derived positions — recalculated from transactions on every import';
-COMMENT ON COLUMN holdings.quantity_total IS 'All shares including pledged ones (covered calls)';
-COMMENT ON COLUMN holdings.quantity_free IS 'Shares available to trade = total - pledged';
-COMMENT ON COLUMN holdings.quantity_pledged IS 'Shares locked in open option contracts';
-COMMENT ON COLUMN holdings.acb_per_share IS 'Average cost basis per share in trade currency';
-COMMENT ON COLUMN holdings.total_acb IS 'Total cost basis = acb_per_share x quantity_total';
+        last_calculated_at      TIMESTAMPTZ,
+        created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
+        CONSTRAINT uq_holding_account_symbol
+            UNIQUE (account_id, symbol),
+        CONSTRAINT chk_holding_asset_type
+            CHECK (asset_type IN ('STOCK', 'ETF', 'CRYPTO', 'OTHER'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_holdings_account_id ON holdings(account_id);
+    CREATE INDEX IF NOT EXISTS idx_holdings_symbol ON holdings(symbol);
+    CREATE INDEX IF NOT EXISTS idx_holdings_open ON holdings(is_position_open) WHERE is_position_open = TRUE;
+
+    CREATE TRIGGER trigger_holdings_updated_at
+        BEFORE UPDATE ON holdings
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+    COMMENT ON TABLE holdings IS 'One row per account+symbol. Tracks open and closed positions with realized and unrealized G/L.';
+    COMMENT ON COLUMN holdings.is_position_open IS 'TRUE if quantity > 0, FALSE if fully sold';
+    COMMENT ON COLUMN holdings.realized_gain_loss IS 'Cumulative realized G/L from all sells. Never resets even if position reopened.';
+    COMMENT ON COLUMN holdings.unrealized_gain_loss IS 'Updated by price scheduler. NULL if no price available.';
+    COMMENT ON COLUMN holdings.total_proceeds IS 'Sum of all sell proceeds for this symbol in this account';
+    COMMENT ON COLUMN holdings.total_cost_sold IS 'Sum of ACB of all shares sold';
+    COMMENT ON COLUMN holdings.current_price IS 'Latest price from price_cache — copied here for fast UI access';
 -- ============================================================
 -- 15. CASH BALANCES
 -- CAD and USD cash per account.
@@ -729,3 +744,142 @@ COMMENT ON TABLE app_settings IS 'Super admin configurable settings — price re
 -- ============================================================
 -- MORE TABLES WILL BE ADDED HERE AS WE BUILD FEATURES
 -- ============================================================
+
+
+-- 1. Create security_master
+CREATE TABLE security_master (
+    symbol          TEXT PRIMARY KEY,
+    exchange        TEXT,
+    currency        TEXT NOT NULL DEFAULT 'USD',
+    name            TEXT,
+    asset_type      TEXT,
+    sector          TEXT,
+    industry        TEXT,
+    market_cap      NUMERIC(20,2),
+    country         TEXT,
+    logo_url        TEXT,
+    is_active       BOOLEAN NOT NULL DEFAULT TRUE,
+    last_fetched_at TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- 2. Drop and recreate price_cache with full OHLCV
+DROP TABLE IF EXISTS price_cache CASCADE;
+
+CREATE TABLE price_cache (
+    symbol              TEXT NOT NULL,
+    currency            TEXT NOT NULL,
+    name                TEXT,              -- from API (good to cache)
+    exchange            TEXT,              -- e.g. NASDAQ
+    mic_code            TEXT,              -- e.g. XNGS
+    trade_date          DATE,              -- date of last trade
+    last_quote_at       TIMESTAMPTZ,       -- exact timestamp of last quote
+    is_market_open      BOOLEAN,           -- was market open at fetch time
+    -- OHLCV
+    open                NUMERIC(18,6),
+    high                NUMERIC(18,6),
+    low                 NUMERIC(18,6),
+    close               NUMERIC(18,6),
+    volume              BIGINT,
+    average_volume      BIGINT,            -- 30-day average volume
+    -- Day change
+    previous_close      NUMERIC(18,6),
+    day_change          NUMERIC(18,6),     -- API field: "change"
+    day_change_pct      NUMERIC(10,6),     -- API field: "percent_change"
+    -- 52 week
+    week_52_low              NUMERIC(18,6),
+    week_52_high             NUMERIC(18,6),
+    week_52_low_change       NUMERIC(18,6),
+    week_52_high_change      NUMERIC(18,6),
+    week_52_low_change_pct   NUMERIC(10,6),
+    week_52_high_change_pct  NUMERIC(10,6),
+    week_52_range            TEXT,
+    -- Meta
+    fetched_at          TIMESTAMPTZ,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (symbol, currency)
+);
+
+-- 3. Create price_history
+DROP TABLE IF EXISTS price_history CASCADE;
+
+CREATE TABLE price_history (
+    symbol          TEXT NOT NULL,
+    date            DATE NOT NULL,
+    currency        TEXT NOT NULL,
+    open            NUMERIC(18,6),
+    high            NUMERIC(18,6),
+    low             NUMERIC(18,6),
+    close           NUMERIC(18,6),
+    volume          BIGINT,
+    average_volume  BIGINT,
+    day_change      NUMERIC(18,6),
+    day_change_pct  NUMERIC(10,6),
+    source          TEXT NOT NULL DEFAULT 'twelvedata',
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (symbol, date, currency)
+);
+
+CREATE INDEX idx_price_history_symbol_date
+    ON price_history(symbol, date DESC);
+
+-- 4. Create portfolio_snapshots
+CREATE TABLE portfolio_snapshots (
+    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    circle_id       UUID NOT NULL REFERENCES circles(id) ON DELETE CASCADE,
+    date            DATE NOT NULL,
+    total_value     NUMERIC(18,2),
+    total_invested  NUMERIC(18,2),
+    total_deposited NUMERIC(18,2),
+    total_withdrawn NUMERIC(18,2),
+    net_deposited   NUMERIC(18,2),
+    unrealized_gl   NUMERIC(18,2),
+    realized_gl     NUMERIC(18,2),
+    total_gl        NUMERIC(18,2),
+    cash_cad        NUMERIC(18,2),
+    cash_usd        NUMERIC(18,2),
+    currency        TEXT NOT NULL DEFAULT 'CAD',
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_snapshot_circle_date UNIQUE (circle_id, date)
+);
+
+CREATE INDEX idx_snapshots_circle_date
+    ON portfolio_snapshots(circle_id, date DESC);
+
+-- 5. Add missing columns to holdings
+ALTER TABLE holdings ADD COLUMN IF NOT EXISTS market_value NUMERIC(18,2);
+ALTER TABLE holdings ADD COLUMN IF NOT EXISTS day_change NUMERIC(18,6);
+ALTER TABLE holdings ADD COLUMN IF NOT EXISTS day_change_pct NUMERIC(8,4);
+ALTER TABLE holdings ADD COLUMN IF NOT EXISTS previous_close NUMERIC(18,6);
+ALTER TABLE holdings ADD COLUMN IF NOT EXISTS realized_gain_loss_pct NUMERIC(8,4);
+
+-- 6. Expand transaction_type constraint
+ALTER TABLE transactions DROP CONSTRAINT IF EXISTS chk_transaction_type;
+ALTER TABLE transactions ADD CONSTRAINT chk_transaction_type CHECK (
+    transaction_type IN (
+        'BUY', 'SELL', 'DIVIDEND', 'DISTRIBUTION', 'DEPOSIT', 'WITHDRAWAL',
+        'FX_CONVERSION', 'INTEREST', 'FEE', 'RETURN_OF_CAPITAL',
+        'STOCK_SPLIT', 'CORPORATE_ACTION', 'INTERNAL_TRANSFER',
+        'NORBERT_GAMBIT', 'OPTION_PREMIUM', 'OPTION_BUY_BACK',
+        'OPTION_ASSIGNED', 'OPTION_EXPIRED', 'CRYPTO', 'OTHER'
+    )
+);
+
+-- 7. Expand asset_type constraint on transactions
+ALTER TABLE transactions DROP CONSTRAINT IF EXISTS chk_asset_type;
+ALTER TABLE transactions ADD CONSTRAINT chk_asset_type CHECK (
+    asset_type IN (
+        'STOCK', 'ETF', 'OPTION', 'CRYPTO', 'CASH',
+        'REIT', 'PREFERRED', 'BOND', 'MUTUAL_FUND', 'GIC', 'OTHER', NULL
+    )
+);
+
+-- 8. Expand asset_type constraint on holdings
+ALTER TABLE holdings DROP CONSTRAINT IF EXISTS chk_holding_asset_type;
+ALTER TABLE holdings ADD CONSTRAINT chk_holding_asset_type CHECK (
+    asset_type IN (
+        'STOCK', 'ETF', 'CRYPTO', 'REIT', 'PREFERRED', 'OTHER'
+    )
+);

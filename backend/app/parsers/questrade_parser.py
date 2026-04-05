@@ -180,7 +180,7 @@ class QuestradeParser(BaseParser):
                         symbol_normalized='DLR.TO',
                         asset_type='ETF',
                         description=description,
-                        quantity=quantity if quantity != 0 else None,
+                        quantity=abs(quantity) if quantity != 0 else None,
                         fx_rate_to_cad=fx_rate,
                         raw_data={'row': str(row)}
                     )
@@ -238,7 +238,7 @@ class QuestradeParser(BaseParser):
                     symbol_normalized=symbol_norm,
                     asset_type=detect_asset_type(symbol_norm, description),
                     description=description,
-                    quantity=quantity if quantity != 0 else None,
+                    quantity=abs(quantity) if quantity != 0 else None,
                     price_per_unit=price if price != 0 else None,
                     gross_amount=gross_amount if gross_amount != 0 else None,
                     commission=commission,

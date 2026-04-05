@@ -2,13 +2,14 @@ import { useState } from 'react'
 import { Outlet } from 'react-router-dom'
 import Sidebar from './Sidebar'
 import FilterBar from './FilterBar'
+import LoadingBar from './LoadingBar'
 
 function Layout() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
 
   return (
     <div style={{ display: 'flex', minHeight: '100vh', background: 'var(--content-bg)' }}>
-      
+      <LoadingBar />
       {/* Mobile overlay — darkens background when sidebar is open */}
       {sidebarOpen && (
         <div

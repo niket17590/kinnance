@@ -3,27 +3,38 @@ import { supabase } from '../context/AuthContext'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
-// Create axios instance
 const api = axios.create({
   baseURL: `${API_URL}/api/v1`,
-  headers: {
-    'Content-Type': 'application/json'
-  }
+  headers: { 'Content-Type': 'application/json' }
 })
 
-// Auto-attach JWT token to every request
+// Loading callbacks — set by LoadingProvider
+let onRequestStart = null
+let onRequestEnd = null
+
+export function setLoadingCallbacks(start, end) {
+  onRequestStart = start
+  onRequestEnd = end
+}
+
+// Attach JWT token + trigger loading start
 api.interceptors.request.use(async (config) => {
   const { data: { session } } = await supabase.auth.getSession()
   if (session?.access_token) {
     config.headers.Authorization = `Bearer ${session.access_token}`
   }
+  onRequestStart?.()
   return config
 })
 
-// Handle 401 — redirect to login
+// Trigger loading end on response or error
 api.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    onRequestEnd?.()
+    return response
+  },
   async (error) => {
+    onRequestEnd?.()
     if (error.response?.status === 401) {
       await supabase.auth.signOut()
       window.location.href = '/login'
@@ -32,10 +43,7 @@ api.interceptors.response.use(
   }
 )
 
-// ============================================================
-// Members
-// ============================================================
-
+// ── Members ──────────────────────────────────────────────────
 export const membersApi = {
   getAll: () => api.get('/members'),
   getById: (id) => api.get(`/members/${id}`),
@@ -44,10 +52,7 @@ export const membersApi = {
   delete: (id) => api.delete(`/members/${id}`)
 }
 
-// ============================================================
-// Member Accounts
-// ============================================================
-
+// ── Member Accounts ───────────────────────────────────────────
 export const memberAccountsApi = {
   getAll: (memberId = null) => api.get('/member-accounts', {
     params: memberId ? { member_id: memberId } : {}
@@ -58,10 +63,7 @@ export const memberAccountsApi = {
   delete: (id) => api.delete(`/member-accounts/${id}`)
 }
 
-// ============================================================
-// Circles
-// ============================================================
-
+// ── Circles ───────────────────────────────────────────────────
 export const circlesApi = {
   getAll: () => api.get('/circles'),
   getById: (id) => api.get(`/circles/${id}`),
@@ -73,10 +75,7 @@ export const circlesApi = {
   removeAccount: (circleId, accountId) => api.delete(`/circles/${circleId}/accounts/${accountId}`)
 }
 
-// ============================================================
-// Reference Data
-// ============================================================
-
+// ── Reference Data ────────────────────────────────────────────
 export const referenceApi = {
   getRegions: () => api.get('/reference/regions'),
   getBrokers: (regionCode = null) => api.get('/reference/brokers', {
@@ -91,10 +90,7 @@ export const referenceApi = {
   getCurrencies: () => api.get('/reference/currencies')
 }
 
-// ============================================================
-// Transactions
-// ============================================================
-
+// ── Transactions ──────────────────────────────────────────────
 export const transactionsApi = {
   getAll: (params = {}) => api.get('/transactions', { params })
 }

@@ -496,8 +496,16 @@ def run_import(
         if imported > 0:
             affected_ids = list(set(account_mapping.values()))
             from app.services.acb_service import recalculate_holdings_for_accounts
-
             recalculate_holdings_for_accounts(db, affected_ids)
+
+        # Collect unique symbols that need price tracking
+        imported_symbols = list(set(
+            t.symbol_normalized
+            for t in parse_result.transactions
+            if t.symbol_normalized
+            and t.transaction_type in ('BUY', 'SELL')
+            and t.broker_account_identifier not in skipped_accounts
+        ))
 
         return {
             "status": "COMPLETE",
@@ -509,6 +517,7 @@ def run_import(
             "date_from": str(date_from) if date_from else None,
             "date_to": str(date_to) if date_to else None,
             "parse_errors": parse_result.errors[:10],
+            "imported_symbols": imported_symbols,
         }
 
     except Exception as e:

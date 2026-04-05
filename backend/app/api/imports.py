@@ -1,10 +1,10 @@
-from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, status
+from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, status, BackgroundTasks
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from uuid import UUID
 import json
 
-from app.core.database import get_db
+from app.core.database import get_db, SessionLocal
 from app.core.security import get_current_db_user
 from app.services import import_service
 
@@ -55,6 +55,7 @@ async def parse_file(
 
 @router.post("/import")
 async def do_import(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     broker_code: str = Form(...),
     member_id: str = Form(...),
@@ -65,12 +66,10 @@ async def do_import(
 ):
     """
     Step 2: Run the actual import.
-
-    confirmed_mappings: JSON {broker_identifier: kinnance_account_id}
-    skipped_accounts:   JSON [broker_identifier, ...]
-
-    Returns 5 counts:
-      total_transactions, imported, duplicates_skipped, accounts_skipped, failed
+    After import, fires a background task to:
+      - Fetch security info for new symbols (yfinance)
+      - Push new symbols to rolling price queue
+      - Trigger immediate price fetch for new symbols
     """
     broker_code = broker_code.upper()
 
@@ -99,6 +98,32 @@ async def do_import(
         confirmed_mappings=mappings,
         skipped_accounts=skipped
     )
+
+    # Background task — fetch security info + prices for new symbols
+    imported_symbols = result.get("imported_symbols", [])
+    if imported_symbols and result.get("status") == "COMPLETE":
+        def _bg_task(symbols: list[str]):
+            bg_db = SessionLocal()
+            try:
+                from app.services.price_service import (
+                    ensure_securities_exist,
+                    refresh_prices,
+                    push_to_queue
+                )
+                # 1. Fetch company info for new symbols (yfinance)
+                ensure_securities_exist(bg_db, symbols)
+                # 2. Push all symbols to rolling queue
+                push_to_queue(symbols)
+                # 3. Fetch prices immediately for new symbols
+                refresh_prices(bg_db, symbols)
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).error(f"Background price fetch failed: {e}")
+            finally:
+                bg_db.close()
+
+        background_tasks.add_task(_bg_task, imported_symbols)
+
     return result
 
 

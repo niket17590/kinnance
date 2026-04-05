@@ -210,7 +210,7 @@ class WealthSimpleParser(BaseParser):
                     symbol_normalized=symbol_norm,
                     asset_type=detect_asset_type(symbol_norm),
                     description=row.get("name") or activity_type,
-                    quantity=quantity,
+                    quantity=abs(quantity) if quantity is not None else None,
                     price_per_unit=price,
                     gross_amount=net_amount,
                     raw_data=dict(row),

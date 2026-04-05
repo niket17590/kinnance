@@ -5,15 +5,20 @@ import { AuthProvider } from "./context/AuthContext";
 import { FilterProvider } from "./context/FilterContext";
 import "./index.css";
 import App from "./App.jsx";
-
+import { LoadingProvider } from "./context/LoadingContext";
+import { RefreshProvider } from "./context/RefreshContext";
 
 createRoot(document.getElementById("root")).render(
   <StrictMode>
     <BrowserRouter>
       <AuthProvider>
-        <FilterProvider>
-          <App />
-        </FilterProvider>
+        <LoadingProvider>
+          <RefreshProvider>
+            <FilterProvider>
+              <App />
+            </FilterProvider>
+          </RefreshProvider>
+        </LoadingProvider>
       </AuthProvider>
     </BrowserRouter>
   </StrictMode>,

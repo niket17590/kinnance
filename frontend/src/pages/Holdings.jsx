@@ -1,6 +1,36 @@
-import { useState, useEffect } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import api from '../services/api'
 import { useFilters } from '../context/FilterContext'
+import { useRefresh } from '../context/RefreshContext'
+
+// ── Helpers ───────────────────────────────────────────────────
+
+const fmt = (n, decimals = 2) =>
+  n == null ? null : Number(n).toLocaleString('en-CA', {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals
+  })
+
+const fmtCurrency = (n, currency = 'USD') => {
+  if (n == null) return '—'
+  const sym = currency === 'CAD' ? 'C$' : '$'
+  return `${sym}${fmt(Math.abs(n))}`
+}
+
+const fmtQty = (n) => {
+  if (n == null) return '—'
+  const num = Number(n)
+  return num % 1 === 0 ? num.toLocaleString() : num.toFixed(4)
+}
+
+const fmtPct = (n) => n == null ? '—' : `${Number(n) >= 0 ? '+' : ''}${fmt(n)}%`
+
+const gainColor = (n) => {
+  if (n == null) return 'var(--text-primary)'
+  return Number(n) >= 0 ? '#14532D' : '#991B1B'
+}
+
+const gainPrefix = (n) => n == null ? '' : Number(n) >= 0 ? '+' : ''
 
 const TAX_COLORS = {
   TAX_FREE:     { bg: '#DCFCE7', color: '#14532D' },
@@ -16,165 +46,164 @@ const TAX_LABELS = {
   CORP_TAXABLE: 'Corp',
 }
 
-const fmt = (n, decimals = 2) =>
-  n == null ? null : Number(n).toLocaleString('en-CA', {
-    minimumFractionDigits: decimals,
-    maximumFractionDigits: decimals
-  })
+// ── Sort header ───────────────────────────────────────────────
 
-const fmtCurrency = (n) => n == null ? '—' : `$${fmt(Math.abs(n))}`
-const fmtQty = (n) => {
-  if (n == null) return '—'
-  const num = Number(n)
-  return num % 1 === 0 ? num.toLocaleString() : num.toFixed(4)
-}
-const gainColor = (n) => {
-  if (n == null) return 'var(--text-primary)'
-  return Number(n) >= 0 ? '#14532D' : '#991B1B'
-}
-const gainPrefix = (n) => n == null ? '' : Number(n) >= 0 ? '+' : ''
-
-
-// Aggregate account holdings into symbol-level rows
-function aggregateBySymbol(accounts) {
-  const symbolMap = {}
-
-  for (const account of accounts) {
-    for (const h of account.holdings) {
-      const sym = h.symbol
-      if (!symbolMap[sym]) {
-        symbolMap[sym] = {
-          symbol: sym,
-          asset_type: h.asset_type,
-          currency: h.currency,
-          current_price: h.current_price,
-          day_change_pct: h.day_change_pct,
-          quantity_total: 0,
-          total_acb: 0,
-          market_value: null,
-          unrealized_gain_loss: null,
-          unrealized_gain_loss_pct: null,
-          acb_per_share: 0,
-          breakdowns: []
-        }
-      }
-
-      const entry = symbolMap[sym]
-      entry.quantity_total += Number(h.quantity_total || 0)
-      entry.total_acb += Number(h.total_acb || 0)
-      if (h.market_value != null) {
-        entry.market_value = (entry.market_value || 0) + Number(h.market_value)
-      }
-      if (h.unrealized_gain_loss != null) {
-        entry.unrealized_gain_loss = (entry.unrealized_gain_loss || 0) + Number(h.unrealized_gain_loss)
-      }
-
-      entry.breakdowns.push({
-        account_id: account.account_id,
-        member_name: account.member_name,
-        account_nickname: account.account_nickname,
-        account_type_code: account.account_type_code,
-        account_type_name: account.account_type_name,
-        broker_name: account.broker_name,
-        tax_category: account.tax_category,
-        quantity_total: h.quantity_total,
-        total_acb: h.total_acb,
-        acb_per_share: h.acb_per_share,
-        market_value: h.market_value,
-        unrealized_gain_loss: h.unrealized_gain_loss,
-        unrealized_gain_loss_pct: h.unrealized_gain_loss_pct,
-      })
-    }
-  }
-
-  return Object.values(symbolMap).map(s => {
-    s.acb_per_share = s.quantity_total > 0 ? s.total_acb / s.quantity_total : 0
-    if (s.market_value != null && s.total_acb > 0) {
-      s.unrealized_gain_loss_pct = ((s.market_value - s.total_acb) / s.total_acb) * 100
-    }
-    s.breakdowns.sort((a, b) => Number(b.total_acb || 0) - Number(a.total_acb || 0))
-    return s
-  })
-}
-
-// Sort holdings array by column key
-function sortHoldings(holdings, sortKey, sortDir) {
-  const getValue = (h) => {
-    switch (sortKey) {
-      case 'symbol':               return h.symbol
-      case 'quantity_total':       return Number(h.quantity_total || 0)
-      case 'acb_per_share':        return Number(h.acb_per_share || 0)
-      case 'current_price':        return Number(h.current_price || 0)
-      case 'market_value':         return Number(h.market_value || h.total_acb || 0)
-      case 'unrealized_gain_loss': return Number(h.unrealized_gain_loss || 0)
-      default:                     return Number(h.market_value || h.total_acb || 0)
-    }
-  }
-
-  return [...holdings].sort((a, b) => {
-    const aVal = getValue(a)
-    const bVal = getValue(b)
-    if (typeof aVal === 'string') {
-      return sortDir === 'asc'
-        ? aVal.localeCompare(bVal)
-        : bVal.localeCompare(aVal)
-    }
-    return sortDir === 'asc' ? aVal - bVal : bVal - aVal
-  })
-}
-
-// Column sort header
-function SortableTh({ label, sortKey, currentSort, currentDir, onSort, align = 'right' }) {
-  const active = currentSort === sortKey
+function SortTh({ label, sortKey, current, dir, onSort, align = 'right', width }) {
+  const active = current === sortKey
   return (
-    <th
-      onClick={() => onSort(sortKey)}
-      style={{
-        padding: '10px 16px', textAlign: align,
-        fontSize: '10px', fontWeight: '700',
-        textTransform: 'uppercase', letterSpacing: '0.05em',
-        color: active ? 'var(--accent-dark)' : 'var(--text-secondary)',
-        whiteSpace: 'nowrap', background: 'var(--content-bg)',
-        cursor: 'pointer', userSelect: 'none'
-      }}
-    >
+    <th onClick={() => onSort(sortKey)} style={{
+      padding: '10px 16px',
+      textAlign: align,
+      fontSize: '10px',
+      fontWeight: '700',
+      textTransform: 'uppercase',
+      letterSpacing: '0.05em',
+      color: active ? 'var(--accent-dark)' : 'var(--text-secondary)',
+      whiteSpace: 'nowrap',
+      background: 'var(--content-bg)',
+      cursor: 'pointer',
+      userSelect: 'none',
+      width: width || 'auto'
+    }}>
       {label}{' '}
       <span style={{ opacity: active ? 1 : 0.3 }}>
-        {active ? (currentDir === 'asc' ? '↑' : '↓') : '↕'}
+        {active ? (dir === 'asc' ? '↑' : '↓') : '↕'}
       </span>
     </th>
   )
 }
 
-function SymbolRow({ holding }) {
+// ── Account breakdown row ─────────────────────────────────────
+
+function BreakdownRow({ bd, currency, isLast }) {
+  const tc = TAX_COLORS[bd.tax_category] || { bg: '#F3F4F6', color: '#374151' }
+
+  return (
+    <tr style={{
+      borderBottom: isLast ? '1px solid var(--filter-row-border)' : '1px solid var(--accent-light)',
+      background: 'var(--accent-light)'
+    }}>
+      {/* Account info */}
+      <td style={{ padding: '8px 16px 8px 36px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          <span style={{ fontSize: '12px', fontWeight: '600', color: 'var(--text-primary)' }}>
+            {bd.member_name}
+          </span>
+          <span style={{
+            fontSize: '10px', fontWeight: '600',
+            padding: '1px 6px', borderRadius: '4px', ...tc
+          }}>
+            {TAX_LABELS[bd.tax_category] || bd.tax_category}
+          </span>
+          {!bd.is_position_open && (
+            <span style={{
+              fontSize: '10px', color: 'var(--text-secondary)',
+              padding: '1px 5px', borderRadius: '4px',
+              background: 'var(--filter-row-border)'
+            }}>
+              closed
+            </span>
+          )}
+        </div>
+        <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '1px' }}>
+          {bd.account_nickname || bd.account_type_name} · {bd.broker_name}
+        </div>
+      </td>
+
+      {/* Qty */}
+      <td style={{ padding: '8px 16px', textAlign: 'right' }}>
+        <span style={{ fontSize: '12px', color: 'var(--text-primary)' }}>
+          {bd.is_position_open ? fmtQty(bd.quantity_total) : '0'}
+        </span>
+      </td>
+
+      {/* ACB */}
+      <td style={{ padding: '8px 16px', textAlign: 'right' }}>
+        {bd.is_position_open ? (
+          <div>
+            <div style={{ fontSize: '12px', color: 'var(--text-primary)' }}>
+              {fmtCurrency(bd.acb_per_share, currency)}
+            </div>
+            <div style={{ fontSize: '10px', color: 'var(--text-secondary)', marginTop: '1px' }}>
+              Total: {fmtCurrency(bd.total_acb, currency)}
+            </div>
+          </div>
+        ) : (
+          <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>—</span>
+        )}
+      </td>
+
+      {/* Price */}
+      <td style={{ padding: '8px 16px', textAlign: 'right' }}>
+        <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>—</span>
+      </td>
+
+      {/* Market value */}
+      <td style={{ padding: '8px 16px', textAlign: 'right' }}>
+        <span style={{ fontSize: '12px', color: 'var(--text-primary)' }}>
+          {bd.market_value != null ? fmtCurrency(bd.market_value, currency) : '—'}
+        </span>
+      </td>
+
+      {/* Unrealized G/L */}
+      <td style={{ padding: '8px 16px', textAlign: 'right' }}>
+        {bd.unrealized_gl != null ? (
+          <div style={{ fontSize: '12px', color: gainColor(bd.unrealized_gl) }}>
+            {gainPrefix(bd.unrealized_gl)}{fmtCurrency(bd.unrealized_gl, currency)}
+            <span style={{ marginLeft: '4px', opacity: 0.8 }}>
+              ({fmtPct(bd.unrealized_gl_pct)})
+            </span>
+          </div>
+        ) : (
+          <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>—</span>
+        )}
+      </td>
+
+      {/* Realized G/L */}
+      <td style={{ padding: '8px 16px', textAlign: 'right' }}>
+        {bd.realized_gl !== 0 ? (
+          <span style={{ fontSize: '12px', color: gainColor(bd.realized_gl) }}>
+            {gainPrefix(bd.realized_gl)}{fmtCurrency(bd.realized_gl, currency)}
+          </span>
+        ) : (
+          <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>—</span>
+        )}
+      </td>
+
+      {/* Holding % — not shown at account level */}
+      <td style={{ padding: '8px 16px' }} />
+    </tr>
+  )
+}
+
+// ── Open position row ─────────────────────────────────────────
+
+function OpenRow({ position }) {
   const [expanded, setExpanded] = useState(false)
-  const hasPrice = holding.current_price != null
-  const hasMultipleAccounts = holding.breakdowns.length > 1
+  const multi = position.breakdowns.length > 1
+  const hasPrice = position.current_price != null
+  const { currency } = position
 
   return (
     <>
       <tr
-        onClick={() => hasMultipleAccounts && setExpanded(!expanded)}
+        onClick={() => multi && setExpanded(!expanded)}
         style={{
           borderBottom: expanded ? 'none' : '1px solid var(--filter-row-border)',
-          cursor: hasMultipleAccounts ? 'pointer' : 'default',
+          cursor: multi ? 'pointer' : 'default',
           background: expanded ? 'var(--accent-light)' : 'transparent',
           transition: 'background 0.1s'
         }}
         onMouseEnter={e => { if (!expanded) e.currentTarget.style.background = 'var(--content-bg)' }}
         onMouseLeave={e => { if (!expanded) e.currentTarget.style.background = 'transparent' }}
       >
-        {/* Symbol — chevron always takes same space for alignment */}
+        {/* Symbol */}
         <td style={{ padding: '12px 16px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            {/* Fixed-width chevron container — always present, invisible when not expandable */}
             <div style={{ width: '12px', flexShrink: 0 }}>
-              {hasMultipleAccounts && (
+              {multi && (
                 <svg viewBox="0 0 14 14" fill="none" width="12" height="12"
-                  style={{
-                    transform: expanded ? 'rotate(0deg)' : 'rotate(-90deg)',
-                    transition: 'transform 0.2s'
-                  }}>
+                  style={{ transform: expanded ? 'rotate(0deg)' : 'rotate(-90deg)', transition: 'transform 0.2s' }}>
                   <path d="M2 4l5 5 5-5" stroke="var(--text-secondary)" strokeWidth="1.5"
                     strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
@@ -182,13 +211,13 @@ function SymbolRow({ holding }) {
             </div>
             <div>
               <div style={{ fontSize: '14px', fontWeight: '700', color: 'var(--accent-dark)' }}>
-                {holding.symbol}
+                {position.symbol}
               </div>
               <div style={{ fontSize: '10px', color: 'var(--text-secondary)', marginTop: '1px' }}>
-                {holding.asset_type}
-                {hasMultipleAccounts && (
+                {position.asset_type} · {currency}
+                {multi && (
                   <span style={{ marginLeft: '6px', color: 'var(--accent)' }}>
-                    {holding.breakdowns.length} accounts
+                    {position.breakdowns.length} accounts
                   </span>
                 )}
               </div>
@@ -196,20 +225,20 @@ function SymbolRow({ holding }) {
           </div>
         </td>
 
-        {/* Quantity */}
+        {/* Qty */}
         <td style={{ padding: '12px 16px', textAlign: 'right' }}>
           <span style={{ fontSize: '13px', fontWeight: '500', color: 'var(--text-primary)' }}>
-            {fmtQty(holding.quantity_total)}
+            {fmtQty(position.quantity_total)}
           </span>
         </td>
 
         {/* ACB per share */}
         <td style={{ padding: '12px 16px', textAlign: 'right' }}>
           <div style={{ fontSize: '13px', color: 'var(--text-primary)' }}>
-            {fmtCurrency(holding.acb_per_share)}
+            {fmtCurrency(position.acb_per_share, currency)}
           </div>
           <div style={{ fontSize: '10px', color: 'var(--text-secondary)', marginTop: '1px' }}>
-            Total: {fmtCurrency(holding.total_acb)}
+            {fmtCurrency(position.total_acb, currency)} invested
           </div>
         </td>
 
@@ -218,11 +247,11 @@ function SymbolRow({ holding }) {
           {hasPrice ? (
             <>
               <div style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-primary)' }}>
-                {fmtCurrency(holding.current_price)}
+                {fmtCurrency(position.current_price, currency)}
               </div>
-              {holding.day_change_pct != null && (
-                <div style={{ fontSize: '10px', marginTop: '1px', color: gainColor(holding.day_change_pct) }}>
-                  {gainPrefix(holding.day_change_pct)}{fmt(holding.day_change_pct)}%
+              {position.day_change_pct != null && (
+                <div style={{ fontSize: '10px', marginTop: '1px', color: gainColor(position.day_change_pct) }}>
+                  {gainPrefix(position.day_change_pct)}{fmt(position.day_change_pct)}% today
                 </div>
               )}
             </>
@@ -234,7 +263,7 @@ function SymbolRow({ holding }) {
         {/* Market value */}
         <td style={{ padding: '12px 16px', textAlign: 'right' }}>
           <span style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-primary)' }}>
-            {hasPrice ? fmtCurrency(holding.market_value) : '—'}
+            {hasPrice ? fmtCurrency(position.market_value, currency) : '—'}
           </span>
         </td>
 
@@ -242,94 +271,201 @@ function SymbolRow({ holding }) {
         <td style={{ padding: '12px 16px', textAlign: 'right' }}>
           {hasPrice ? (
             <>
-              <div style={{ fontSize: '13px', fontWeight: '600', color: gainColor(holding.unrealized_gain_loss) }}>
-                {gainPrefix(holding.unrealized_gain_loss)}{fmtCurrency(holding.unrealized_gain_loss)}
+              <div style={{ fontSize: '13px', fontWeight: '600', color: gainColor(position.unrealized_gl) }}>
+                {gainPrefix(position.unrealized_gl)}{fmtCurrency(position.unrealized_gl, currency)}
               </div>
-              <div style={{ fontSize: '10px', marginTop: '1px', color: gainColor(holding.unrealized_gain_loss_pct) }}>
-                {gainPrefix(holding.unrealized_gain_loss_pct)}{fmt(holding.unrealized_gain_loss_pct)}%
+              <div style={{ fontSize: '10px', marginTop: '1px', color: gainColor(position.unrealized_gl_pct) }}>
+                {fmtPct(position.unrealized_gl_pct)}
               </div>
             </>
           ) : (
             <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>—</span>
           )}
         </td>
+
+        {/* Realized G/L */}
+        <td style={{ padding: '12px 16px', textAlign: 'right' }}>
+          {position.realized_gl !== 0 ? (
+            <>
+              <div style={{ fontSize: '13px', fontWeight: '600', color: gainColor(position.realized_gl) }}>
+                {gainPrefix(position.realized_gl)}{fmtCurrency(position.realized_gl, currency)}
+              </div>
+              {position.realized_gl_pct != null && (
+                <div style={{ fontSize: '10px', marginTop: '1px', color: gainColor(position.realized_gl_pct) }}>
+                  {fmtPct(position.realized_gl_pct)}
+                </div>
+              )}
+            </>
+          ) : (
+            <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>—</span>
+          )}
+        </td>
+
+        {/* Holding % */}
+        <td style={{ padding: '12px 16px', textAlign: 'right' }}>
+          <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
+            {position.holding_pct != null ? `${fmt(position.holding_pct)}%` : '—'}
+          </span>
+        </td>
       </tr>
 
       {/* Account breakdowns */}
-      {expanded && holding.breakdowns.map((bd, i) => {
-        const tc = TAX_COLORS[bd.tax_category] || { bg: '#F3F4F6', color: '#374151' }
-        const isLast = i === holding.breakdowns.length - 1
-        return (
-          <tr key={bd.account_id} style={{
-            borderBottom: isLast
-              ? '1px solid var(--filter-row-border)'
-              : '1px solid var(--accent-light)',
-            background: 'var(--accent-light)'
-          }}>
-            {/* Account — indented to align with symbol text */}
-            <td style={{ padding: '8px 16px 8px 36px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <span style={{ fontSize: '12px', fontWeight: '600', color: 'var(--text-primary)' }}>
-                  {bd.member_name}
-                </span>
-                <span style={{
-                  fontSize: '10px', fontWeight: '600',
-                  padding: '1px 6px', borderRadius: '4px', ...tc
-                }}>
-                  {TAX_LABELS[bd.tax_category] || bd.tax_category}
-                </span>
-              </div>
-              <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '1px' }}>
-                {bd.account_nickname || bd.account_type_name} · {bd.broker_name}
-              </div>
-            </td>
-
-            <td style={{ padding: '8px 16px', textAlign: 'right' }}>
-              <span style={{ fontSize: '12px', color: 'var(--text-primary)' }}>
-                {fmtQty(bd.quantity_total)}
-              </span>
-            </td>
-
-            <td style={{ padding: '8px 16px', textAlign: 'right' }}>
-              <div style={{ fontSize: '12px', color: 'var(--text-primary)' }}>
-                {fmtCurrency(bd.acb_per_share)}
-              </div>
-              <div style={{ fontSize: '10px', color: 'var(--text-secondary)', marginTop: '1px' }}>
-                Total: {fmtCurrency(bd.total_acb)}
-              </div>
-            </td>
-
-            <td colSpan={3} style={{ padding: '8px 16px', textAlign: 'right' }}>
-              {bd.market_value != null ? (
-                <span style={{ fontSize: '12px', color: gainColor(bd.unrealized_gain_loss) }}>
-                  {gainPrefix(bd.unrealized_gain_loss)}{fmtCurrency(bd.unrealized_gain_loss)}
-                  {' '}({gainPrefix(bd.unrealized_gain_loss_pct)}{fmt(bd.unrealized_gain_loss_pct)}%)
-                </span>
-              ) : (
-                <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>—</span>
-              )}
-            </td>
-          </tr>
-        )
-      })}
+      {expanded && position.breakdowns.map((bd, i) => (
+        <BreakdownRow
+          key={bd.account_id}
+          bd={bd}
+          currency={currency}
+          isLast={i === position.breakdowns.length - 1}
+        />
+      ))}
     </>
   )
 }
 
+// ── Closed position row ───────────────────────────────────────
+
+function ClosedRow({ position }) {
+  const [expanded, setExpanded] = useState(false)
+  const multi = position.breakdowns.length > 1
+  const { currency } = position
+
+  return (
+    <>
+      <tr
+        onClick={() => multi && setExpanded(!expanded)}
+        style={{
+          borderBottom: expanded ? 'none' : '1px solid var(--filter-row-border)',
+          cursor: multi ? 'pointer' : 'default',
+          opacity: 0.8
+        }}
+        onMouseEnter={e => e.currentTarget.style.background = 'var(--content-bg)'}
+        onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+      >
+        {/* Symbol */}
+        <td style={{ padding: '10px 16px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <div style={{ width: '12px', flexShrink: 0 }}>
+              {multi && (
+                <svg viewBox="0 0 14 14" fill="none" width="12" height="12"
+                  style={{ transform: expanded ? 'rotate(0deg)' : 'rotate(-90deg)', transition: 'transform 0.2s' }}>
+                  <path d="M2 4l5 5 5-5" stroke="var(--text-secondary)" strokeWidth="1.5"
+                    strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              )}
+            </div>
+            <div>
+              <div style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-secondary)' }}>
+                {position.symbol}
+              </div>
+              <div style={{ fontSize: '10px', color: 'var(--text-secondary)', marginTop: '1px' }}>
+                {position.asset_type} · closed
+              </div>
+            </div>
+          </div>
+        </td>
+        <td style={{ padding: '10px 16px', textAlign: 'right' }}>
+          <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>0</span>
+        </td>
+        <td style={{ padding: '10px 16px', textAlign: 'right' }}>
+          <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+            Proceeds: {fmtCurrency(position.total_cost_sold, currency)}
+          </span>
+        </td>
+        <td colSpan={3} />
+        {/* Realized G/L */}
+        <td style={{ padding: '10px 16px', textAlign: 'right' }}>
+          <div style={{ fontSize: '13px', fontWeight: '700', color: gainColor(position.realized_gl) }}>
+            {gainPrefix(position.realized_gl)}{fmtCurrency(position.realized_gl, currency)}
+          </div>
+          {position.realized_gl_pct != null && (
+            <div style={{ fontSize: '10px', marginTop: '1px', color: gainColor(position.realized_gl_pct) }}>
+              {fmtPct(position.realized_gl_pct)}
+            </div>
+          )}
+        </td>
+        <td />
+      </tr>
+
+      {expanded && position.breakdowns.map((bd, i) => (
+        <BreakdownRow
+          key={bd.account_id}
+          bd={bd}
+          currency={currency}
+          isLast={i === position.breakdowns.length - 1}
+        />
+      ))}
+    </>
+  )
+}
+
+// ── Table wrapper ─────────────────────────────────────────────
+
+function HoldingsTable({ positions, isOpen, sortKey, sortDir, onSort }) {
+  const cols = [
+    { label: 'Symbol',         key: 'symbol',          align: 'left'  },
+    { label: 'Quantity',       key: 'quantity_total',   align: 'right' },
+    { label: 'Avg Cost (ACB)', key: 'acb_per_share',    align: 'right' },
+    { label: 'Price',          key: 'current_price',    align: 'right' },
+    { label: 'Market Value',   key: 'market_value',     align: 'right' },
+    { label: 'Unrealized G/L', key: 'unrealized_gl',    align: 'right' },
+    { label: 'Realized G/L',   key: 'realized_gl',      align: 'right' },
+    { label: 'Weight',         key: 'holding_pct',      align: 'right' },
+  ]
+
+  return (
+    <div style={{ overflowX: 'auto' }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+        <thead>
+          <tr style={{ borderBottom: '1px solid var(--card-border)' }}>
+            {cols.map(col => (
+              <SortTh
+                key={col.key}
+                label={col.label}
+                sortKey={col.key}
+                current={sortKey}
+                dir={sortDir}
+                onSort={onSort}
+                align={col.align}
+              />
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {positions.map(p => isOpen
+            ? <OpenRow key={p.symbol} position={p} />
+            : <ClosedRow key={p.symbol} position={p} />
+          )}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+// ── Main Holdings page ────────────────────────────────────────
+
+function sortPositions(positions, key, dir) {
+  return [...positions].sort((a, b) => {
+    const aVal = a[key] ?? (typeof a[key] === 'string' ? '' : -Infinity)
+    const bVal = b[key] ?? (typeof b[key] === 'string' ? '' : -Infinity)
+    if (typeof aVal === 'string') {
+      return dir === 'asc' ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal)
+    }
+    return dir === 'asc' ? aVal - bVal : bVal - aVal
+  })
+}
+
 function Holdings() {
   const { activeFilters, selectedCircle } = useFilters()
+  const { refreshNow, isRefreshing } = useRefresh()
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [showClosed, setShowClosed] = useState(false)
   const [sortKey, setSortKey] = useState('market_value')
   const [sortDir, setSortDir] = useState('desc')
 
-  useEffect(() => {
+  const fetchHoldings = useCallback(async () => {
     if (!selectedCircle) { setData(null); return }
-    fetchHoldings()
-  }, [activeFilters])
-
-  const fetchHoldings = async () => {
     setLoading(true)
     setError('')
     try {
@@ -345,170 +481,179 @@ function Holdings() {
     } finally {
       setLoading(false)
     }
-  }
+  }, [activeFilters, selectedCircle])
+
+  // Stable string key — only changes when filter values actually change
+  const filterKey = JSON.stringify(activeFilters)
+
+  // Fetch when filters change
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { fetchHoldings() }, [filterKey])
+
+  // Fetch when auto-refresh timer fires (every 5 min)
+  const { lastRefreshed } = useRefresh()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { fetchHoldings() }, [lastRefreshed])
 
   const handleSort = (key) => {
-    if (sortKey === key) {
-      setSortDir(d => d === 'desc' ? 'asc' : 'desc')
-    } else {
-      setSortKey(key)
-      setSortDir('desc')
-    }
+    if (sortKey === key) setSortDir(d => d === 'desc' ? 'asc' : 'desc')
+    else { setSortKey(key); setSortDir('desc') }
   }
 
-  const rawSymbols = data ? aggregateBySymbol(data.accounts) : []
-  const symbolHoldings = sortHoldings(rawSymbols, sortKey, sortDir)
-
-  const totalSymbols = symbolHoldings.length
-  const totalValue = symbolHoldings.reduce((sum, h) => sum + (h.market_value ?? h.total_acb ?? 0), 0)
-  const totalGain = symbolHoldings.reduce((sum, h) => sum + (h.unrealized_gain_loss ?? 0), 0)
-  const hasAnyGain = symbolHoldings.some(h => h.unrealized_gain_loss != null)
-
-  const columns = [
-    { label: 'Symbol',          key: 'symbol',               align: 'left' },
-    { label: 'Quantity',        key: 'quantity_total',        align: 'right' },
-    { label: 'Avg Cost (ACB)',  key: 'acb_per_share',         align: 'right' },
-    { label: 'Current Price',   key: 'current_price',         align: 'right' },
-    { label: 'Market Value',    key: 'market_value',          align: 'right' },
-    { label: 'Unrealized G/L',  key: 'unrealized_gain_loss',  align: 'right' },
-  ]
+  const openPositions = sortPositions(data?.open_positions || [], sortKey, sortDir)
+  const closedPositions = sortPositions(data?.closed_positions || [], sortKey, sortDir)
+  const summary = data?.summary || {}
 
   return (
     <div>
-      <div style={{ marginBottom: '20px' }}>
-        <h1 style={{ fontSize: '20px', fontWeight: '700', color: 'var(--text-primary)', marginBottom: '4px' }}>
-          Holdings
-        </h1>
-        <p style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
-          {data
-            ? `${totalSymbols} position${totalSymbols !== 1 ? 's' : ''}${selectedCircle ? ` in ${selectedCircle.name}` : ''}`
-            : 'Current portfolio positions'}
-        </p>
+      {/* Header */}
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: '20px' }}>
+        <div>
+          <h1 style={{ fontSize: '20px', fontWeight: '700', color: 'var(--text-primary)', marginBottom: '4px' }}>
+            Holdings
+          </h1>
+          <p style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
+            {data
+              ? `${openPositions.length} open · ${closedPositions.length} closed${selectedCircle ? ` · ${selectedCircle.name}` : ''}`
+              : 'Current portfolio positions'}
+          </p>
+        </div>
+
+        {/* Manual refresh button */}
+        {selectedCircle && (
+          <button
+            onClick={refreshNow}
+            disabled={isRefreshing || loading}
+            style={{
+              display: 'flex', alignItems: 'center', gap: '6px',
+              padding: '7px 14px', borderRadius: '8px',
+              border: '1px solid var(--card-border)',
+              background: 'var(--card-bg)', cursor: 'pointer',
+              fontSize: '12px', color: 'var(--text-secondary)',
+              opacity: (isRefreshing || loading) ? 0.5 : 1
+            }}
+          >
+            <svg viewBox="0 0 16 16" fill="none" width="13" height="13"
+              style={{ animation: (isRefreshing || loading) ? 'spin 1s linear infinite' : 'none' }}>
+              <path d="M13.5 8A5.5 5.5 0 1 1 8 2.5" stroke="currentColor" strokeWidth="1.5"
+                strokeLinecap="round" />
+              <path d="M8 1v3l2-1.5L8 1Z" fill="currentColor" />
+            </svg>
+            {isRefreshing ? 'Refreshing...' : 'Refresh'}
+            <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
+          </button>
+        )}
       </div>
 
       {/* No circle */}
       {!selectedCircle && (
-        <div style={{
-          background: 'var(--card-bg)', border: '1px solid var(--card-border)',
-          borderRadius: '12px', padding: '48px', textAlign: 'center'
-        }}>
+        <div style={{ background: 'var(--card-bg)', border: '1px solid var(--card-border)', borderRadius: '12px', padding: '48px', textAlign: 'center' }}>
           <div style={{ fontSize: '32px', marginBottom: '12px' }}>📊</div>
-          <div style={{ fontSize: '15px', fontWeight: '600', color: 'var(--text-primary)', marginBottom: '6px' }}>
-            Select a circle to view holdings
-          </div>
-          <div style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
-            Use the Circle filter above to get started
-          </div>
+          <div style={{ fontSize: '15px', fontWeight: '600', color: 'var(--text-primary)', marginBottom: '6px' }}>Select a circle to view holdings</div>
+          <div style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Use the Circle filter above to get started</div>
         </div>
       )}
 
       {error && (
-        <div style={{
-          background: '#FEE2E2', border: '1px solid #FECACA', borderRadius: '8px',
-          padding: '10px 14px', marginBottom: '16px', fontSize: '13px', color: '#DC2626'
-        }}>
+        <div style={{ background: '#FEE2E2', border: '1px solid #FECACA', borderRadius: '8px', padding: '10px 14px', marginBottom: '16px', fontSize: '13px', color: '#DC2626' }}>
           {error}
         </div>
       )}
 
-      {selectedCircle && loading && (
-        <div style={{
-          background: 'var(--card-bg)', border: '1px solid var(--card-border)',
-          borderRadius: '12px', padding: '40px', textAlign: 'center',
-          color: 'var(--text-secondary)', fontSize: '13px'
-        }}>
+      {selectedCircle && loading && !data && (
+        <div style={{ background: 'var(--card-bg)', border: '1px solid var(--card-border)', borderRadius: '12px', padding: '40px', textAlign: 'center', color: 'var(--text-secondary)', fontSize: '13px' }}>
           Loading holdings...
         </div>
       )}
 
       {/* Summary bar */}
-      {selectedCircle && !loading && symbolHoldings.length > 0 && (
-        <div style={{
-          display: 'flex', gap: '24px', flexWrap: 'wrap',
-          background: 'var(--card-bg)', border: '1px solid var(--card-border)',
-          borderRadius: '12px', padding: '16px 20px', marginBottom: '16px',
-          alignItems: 'center'
-        }}>
+      {selectedCircle && data && openPositions.length > 0 && (
+        <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap', background: 'var(--card-bg)', border: '1px solid var(--card-border)', borderRadius: '12px', padding: '16px 20px', marginBottom: '16px', alignItems: 'center' }}>
           <div>
-            <div style={{ fontSize: '10px', fontWeight: '700', textTransform: 'uppercase', color: 'var(--text-secondary)', letterSpacing: '0.05em' }}>
-              Positions
-            </div>
-            <div style={{ fontSize: '20px', fontWeight: '700', color: 'var(--text-primary)' }}>
-              {totalSymbols}
-            </div>
+            <div style={{ fontSize: '10px', fontWeight: '700', textTransform: 'uppercase', color: 'var(--text-secondary)', letterSpacing: '0.05em' }}>Positions</div>
+            <div style={{ fontSize: '20px', fontWeight: '700', color: 'var(--text-primary)' }}>{openPositions.length}</div>
           </div>
           <div>
             <div style={{ fontSize: '10px', fontWeight: '700', textTransform: 'uppercase', color: 'var(--text-secondary)', letterSpacing: '0.05em' }}>
-              {hasAnyGain ? 'Market Value' : 'Total ACB'}
+              {summary.total_market_value != null ? 'Market Value' : 'Invested (ACB)'}
             </div>
             <div style={{ fontSize: '20px', fontWeight: '700', color: 'var(--text-primary)' }}>
-              {fmtCurrency(totalValue)}
+              ${fmt(summary.total_market_value ?? summary.total_invested)}
             </div>
           </div>
-          {hasAnyGain && (
+          {summary.total_unrealized_gl != null && (
             <div>
-              <div style={{ fontSize: '10px', fontWeight: '700', textTransform: 'uppercase', color: 'var(--text-secondary)', letterSpacing: '0.05em' }}>
-                Unrealized G/L
-              </div>
-              <div style={{ fontSize: '20px', fontWeight: '700', color: gainColor(totalGain) }}>
-                {gainPrefix(totalGain)}{fmtCurrency(totalGain)}
+              <div style={{ fontSize: '10px', fontWeight: '700', textTransform: 'uppercase', color: 'var(--text-secondary)', letterSpacing: '0.05em' }}>Unrealized G/L</div>
+              <div style={{ fontSize: '20px', fontWeight: '700', color: gainColor(summary.total_unrealized_gl) }}>
+                {gainPrefix(summary.total_unrealized_gl)}${fmt(Math.abs(summary.total_unrealized_gl))}
               </div>
             </div>
           )}
-          {!hasAnyGain && (
+          {summary.total_realized_gl !== 0 && (
+            <div>
+              <div style={{ fontSize: '10px', fontWeight: '700', textTransform: 'uppercase', color: 'var(--text-secondary)', letterSpacing: '0.05em' }}>Realized G/L</div>
+              <div style={{ fontSize: '20px', fontWeight: '700', color: gainColor(summary.total_realized_gl) }}>
+                {gainPrefix(summary.total_realized_gl)}${fmt(Math.abs(summary.total_realized_gl))}
+              </div>
+            </div>
+          )}
+          {!summary.has_prices && (
             <div style={{ marginLeft: 'auto', fontSize: '12px', color: 'var(--text-secondary)' }}>
-              💡 Set up the price scheduler to see market value & unrealized G/L
+              💡 Prices updating in background
             </div>
           )}
         </div>
       )}
 
-      {/* Empty state */}
-      {selectedCircle && !loading && symbolHoldings.length === 0 && !error && (
-        <div style={{
-          background: 'var(--card-bg)', border: '1px solid var(--card-border)',
-          borderRadius: '12px', padding: '48px', textAlign: 'center'
-        }}>
+      {/* Empty */}
+      {selectedCircle && !loading && openPositions.length === 0 && closedPositions.length === 0 && !error && (
+        <div style={{ background: 'var(--card-bg)', border: '1px solid var(--card-border)', borderRadius: '12px', padding: '48px', textAlign: 'center' }}>
           <div style={{ fontSize: '32px', marginBottom: '12px' }}>📂</div>
-          <div style={{ fontSize: '15px', fontWeight: '600', color: 'var(--text-primary)', marginBottom: '6px' }}>
-            No holdings found
-          </div>
-          <div style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
-            Upload transaction files under Admin → Upload Transactions
-          </div>
+          <div style={{ fontSize: '15px', fontWeight: '600', color: 'var(--text-primary)', marginBottom: '6px' }}>No holdings found</div>
+          <div style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Upload transaction files under Admin → Upload Transactions</div>
         </div>
       )}
 
-      {/* Table */}
-      {selectedCircle && !loading && symbolHoldings.length > 0 && (
-        <div style={{
-          background: 'var(--card-bg)', border: '1px solid var(--card-border)',
-          borderRadius: '12px', overflow: 'hidden'
-        }}>
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <thead>
-                <tr style={{ borderBottom: '1px solid var(--card-border)' }}>
-                  {columns.map(col => (
-                    <SortableTh
-                      key={col.key}
-                      label={col.label}
-                      sortKey={col.key}
-                      currentSort={sortKey}
-                      currentDir={sortDir}
-                      onSort={handleSort}
-                      align={col.align}
-                    />
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {symbolHoldings.map(h => (
-                  <SymbolRow key={h.symbol} holding={h} />
-                ))}
-              </tbody>
-            </table>
+      {/* Open positions */}
+      {selectedCircle && openPositions.length > 0 && (
+        <div style={{ background: 'var(--card-bg)', border: '1px solid var(--card-border)', borderRadius: '12px', overflow: 'hidden', marginBottom: '12px' }}>
+          <div style={{ padding: '12px 16px', background: 'var(--content-bg)', borderBottom: '1px solid var(--card-border)', fontSize: '12px', fontWeight: '700', color: 'var(--text-primary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+            Open Positions ({openPositions.length})
           </div>
+          <HoldingsTable
+            positions={openPositions}
+            isOpen={true}
+            sortKey={sortKey}
+            sortDir={sortDir}
+            onSort={handleSort}
+          />
+        </div>
+      )}
+
+      {/* Closed positions */}
+      {selectedCircle && closedPositions.length > 0 && (
+        <div style={{ background: 'var(--card-bg)', border: '1px solid var(--card-border)', borderRadius: '12px', overflow: 'hidden' }}>
+          <div
+            onClick={() => setShowClosed(!showClosed)}
+            style={{ padding: '12px 16px', background: 'var(--content-bg)', borderBottom: showClosed ? '1px solid var(--card-border)' : 'none', display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer', userSelect: 'none' }}
+          >
+            <span style={{ fontSize: '12px', fontWeight: '700', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+              Closed Positions ({closedPositions.length})
+            </span>
+            <svg viewBox="0 0 14 14" fill="none" width="13" height="13"
+              style={{ transform: showClosed ? 'rotate(0deg)' : 'rotate(-90deg)', transition: 'transform 0.2s' }}>
+              <path d="M2 4l5 5 5-5" stroke="var(--text-secondary)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </div>
+          {showClosed && (
+            <HoldingsTable
+              positions={closedPositions}
+              isOpen={false}
+              sortKey={sortKey}
+              sortDir={sortDir}
+              onSort={handleSort}
+            />
+          )}
         </div>
       )}
     </div>
