@@ -101,12 +101,12 @@ async def get_openapi_schema(
     return openapi_schema
 
 
-@app.get("/", include_in_schema=False)
+@app.api_route("/", methods=["GET", "HEAD"], include_in_schema=False)
 def root():
     return {"status": "ok", "app": "Kinnance API"}
 
 
-@app.get("/health", include_in_schema=False)
+@app.api_route("/health", methods=["GET", "HEAD"], include_in_schema=False)
 def health():
     return {"status": "healthy"}
 
