@@ -36,6 +36,7 @@ WS_TYPE_MAP = {
     ("Interest", ""): "INTEREST",
     ("Dividend", ""): "DIVIDEND",
     ("InternalSecurityTransfer", ""): "INTERNAL_TRANSFER",
+    ("CorporateAction", "INTERNATIONAL_CODE_CHANGE"): "CORPORATE_ACTION",
 }
 
 
@@ -59,7 +60,8 @@ class WealthSimpleParser(BaseParser):
 
     def parse(self, file_content: bytes, filename: str) -> ParseResult:
         result = ParseResult()
-        fx_buffer = {}  # buffer FX rows to pair them
+        fx_buffer = {}        # buffer FX rows to pair them
+        ca_buffer = {}        # buffer CorporateAction rows to pair them
 
         try:
             text = file_content.decode("utf-8-sig").strip()
@@ -191,6 +193,62 @@ class WealthSimpleParser(BaseParser):
                             raw_data=dict(row),
                         )
                         fx_buffer[fx_key] = buffered
+                    continue
+
+                # CORPORATE_ACTION (INTERNATIONAL_CODE_CHANGE) — comes in 2 rows:
+                # Row 1: old symbol, qty negative (removal)
+                # Row 2: new symbol, qty positive (addition)
+                # We pair them and store one CORPORATE_ACTION transaction
+                # on the new symbol with notes="RENAME_FROM:OLD_SYMBOL"
+                if txn_type == "CORPORATE_ACTION":
+                    ca_key = f"{trade_date}_{account_id}"
+                    qty_raw = self.safe_decimal(row.get("quantity"))
+
+                    if ca_key in ca_buffer:
+                        other = ca_buffer.pop(ca_key)
+                        other_qty = self.safe_decimal(other.raw_data.get("quantity", "0"))
+
+                        # Identify which row is old (negative qty) and new (positive qty)
+                        if qty_raw > 0:
+                            new_symbol = symbol_norm
+                            old_symbol = other.symbol_normalized
+                        else:
+                            new_symbol = other.symbol_normalized
+                            old_symbol = symbol_norm
+
+                        if new_symbol and old_symbol:
+                            txn = ParsedTransaction(
+                                transaction_type="CORPORATE_ACTION",
+                                trade_date=trade_date,
+                                trade_currency=currency,
+                                net_amount=Decimal("0"),
+                                net_amount_cad=Decimal("0"),
+                                broker_account_identifier=account_id,
+                                symbol=new_symbol,
+                                symbol_normalized=new_symbol,
+                                asset_type=detect_asset_type(new_symbol),
+                                description=f"Symbol rename: {old_symbol} → {new_symbol}",
+                                quantity=abs(qty_raw) if qty_raw != 0 else abs(other_qty),
+                                notes=f"RENAME_FROM:{old_symbol}",
+                                raw_data=dict(row),
+                            )
+                            result.transactions.append(txn)
+                        else:
+                            self.log_skip(row_num, "Corporate action pair incomplete — skipped")
+                    else:
+                        # Buffer first row — store raw_data with quantity for pairing
+                        buffered = ParsedTransaction(
+                            transaction_type="CORPORATE_ACTION",
+                            trade_date=trade_date,
+                            trade_currency=currency,
+                            net_amount=Decimal("0"),
+                            net_amount_cad=Decimal("0"),
+                            broker_account_identifier=account_id,
+                            symbol=symbol_norm,
+                            symbol_normalized=symbol_norm,
+                            raw_data={**dict(row), "quantity": str(qty_raw)},
+                        )
+                        ca_buffer[ca_key] = buffered
                     continue
 
                 # Regular transaction

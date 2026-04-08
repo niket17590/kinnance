@@ -10,16 +10,17 @@ logger = logging.getLogger(__name__)
 # CONFIG FROM ENV
 #
 # SCHEDULER_ENABLED              — true/false (default: true)
-#                                  Set false in .env.development
 # PRICE_UPDATE_INTERVAL_MINUTES  — how often scheduler runs (default: 10)
-# PRICE_BATCH_SIZE               — symbols per API call (default: 8, free tier limit)
-# NIGHTLY_CLOSE_CRON             — cron for daily close snapshot (default: "0 21 * * 1-5")
+# PRICE_BATCH_SIZE               — US symbols per Twelve Data call (default: 8)
+# CA_PRICE_BATCH_SIZE            — CA symbols per yfinance call (default: 20)
+# NIGHTLY_CLOSE_CRON             — cron for daily close (default: "0 21 * * 1-5")
 # ============================================================
 
-SCHEDULER_ENABLED         = os.getenv("SCHEDULER_ENABLED", "true").lower() == "true"
-PRICE_INTERVAL_MINUTES    = int(os.getenv("PRICE_UPDATE_INTERVAL_MINUTES", "10"))
-PRICE_BATCH_SIZE          = int(os.getenv("PRICE_BATCH_SIZE", "8"))
-NIGHTLY_CRON              = os.getenv("NIGHTLY_CLOSE_CRON", "0 21 * * 1-5")
+SCHEDULER_ENABLED        = os.getenv("SCHEDULER_ENABLED", "true").lower() == "true"
+PRICE_INTERVAL_MINUTES   = int(os.getenv("PRICE_UPDATE_INTERVAL_MINUTES", "10"))
+PRICE_BATCH_SIZE         = int(os.getenv("PRICE_BATCH_SIZE", "8"))
+CA_PRICE_BATCH_SIZE      = int(os.getenv("CA_PRICE_BATCH_SIZE", "20"))
+NIGHTLY_CRON             = os.getenv("NIGHTLY_CLOSE_CRON", "0 21 * * 1-5")
 
 _scheduler: BackgroundScheduler | None = None
 
@@ -35,12 +36,10 @@ def _get_db():
 
 def _price_update_job():
     """
-    Rolling price update job.
-    1. Safety net — ensure any open-position symbols missing from
-       security_master are fetched and added (then pushed to queue)
-    2. Pop next batch from queue
-    3. Fetch prices from Twelve Data
-    4. Update price_cache + holdings unrealized G/L
+    Rolling price update — runs sequentially:
+    1. Safety net: ensure open-position symbols exist in security_master
+    2. Pop US batch → Twelve Data
+    3. Pop CA batch → yfinance
     """
     db = _get_db()
     try:
@@ -49,11 +48,14 @@ def _price_update_job():
             refresh_prices,
             pop_next_batch,
             push_to_queue,
-            queue_size
+            queue_sizes,
+            _us_queue,
+            _ca_queue,
+            _is_canadian
         )
         from sqlalchemy import text
 
-        # Safety net — find open holdings symbols not in security_master
+        # Safety net — find open holdings symbols missing from security_master
         missing_rows = db.execute(text("""
             SELECT DISTINCT h.symbol
             FROM holdings h
@@ -66,18 +68,24 @@ def _price_update_job():
 
         missing_symbols = [row.symbol for row in missing_rows]
         if missing_symbols:
-            logger.info(f"Scheduler: {len(missing_symbols)} symbols missing from security_master — fetching")
+            logger.info(f"Scheduler: {len(missing_symbols)} symbols missing from security_master")
             ensure_securities_exist(db, missing_symbols)
             push_to_queue(missing_symbols)
 
-        # Pop next batch from rolling queue
-        batch = pop_next_batch(PRICE_BATCH_SIZE)
-        if not batch:
-            logger.info("Scheduler: price queue is empty — nothing to update")
+        sizes = queue_sizes()
+        logger.info(f"Scheduler: queue sizes — US: {sizes['us']}, CA: {sizes['ca']}")
+
+        # Pop US batch → Twelve Data
+        us_batch = pop_next_batch(_us_queue, PRICE_BATCH_SIZE)
+
+        # Pop CA batch → yfinance (no strict rate limit)
+        ca_batch = pop_next_batch(_ca_queue, CA_PRICE_BATCH_SIZE)
+
+        if not us_batch and not ca_batch:
+            logger.info("Scheduler: both queues empty — nothing to update")
             return
 
-        logger.info(f"Scheduler: fetching prices for {batch} (queue size: {queue_size()})")
-        refresh_prices(db, batch)
+        refresh_prices(db, us_batch, ca_batch)
 
     except Exception as e:
         logger.error(f"Scheduler price update failed: {e}")
@@ -86,7 +94,7 @@ def _price_update_job():
 
 
 def _nightly_close_job():
-    """Store today's closing prices from price_cache to price_history."""
+    """Store today's closing prices to price_history."""
     db = _get_db()
     try:
         from app.services.price_service import store_daily_close
@@ -103,10 +111,7 @@ def _nightly_close_job():
 # ============================================================
 
 def start_scheduler():
-    """
-    Initialize queue and start APScheduler.
-    Called once on app startup from main.py lifespan.
-    """
+    """Initialize queues and start APScheduler."""
     global _scheduler
 
     if not SCHEDULER_ENABLED:
@@ -117,13 +122,13 @@ def start_scheduler():
         logger.warning("Scheduler already running")
         return
 
-    # Load queue from DB before starting
+    # Load queues from DB
     db = _get_db()
     try:
         from app.services.price_service import load_queue_from_db
         load_queue_from_db(db)
     except Exception as e:
-        logger.error(f"Failed to load price queue: {e}")
+        logger.error(f"Failed to load price queues: {e}")
     finally:
         db.close()
 
@@ -135,7 +140,6 @@ def start_scheduler():
         }
     )
 
-    # Rolling price update
     _scheduler.add_job(
         _price_update_job,
         trigger=IntervalTrigger(minutes=PRICE_INTERVAL_MINUTES),
@@ -144,7 +148,6 @@ def start_scheduler():
         replace_existing=True
     )
 
-    # Nightly close snapshot
     nightly_parts = NIGHTLY_CRON.split()
     if len(nightly_parts) == 5:
         minute, hour, day, month, day_of_week = nightly_parts
@@ -159,30 +162,25 @@ def start_scheduler():
             name="Nightly close to price_history",
             replace_existing=True
         )
-    else:
-        logger.error(f"Invalid NIGHTLY_CLOSE_CRON: {NIGHTLY_CRON}")
 
     _scheduler.start()
     logger.info(
         f"Scheduler started — "
-        f"price update every {PRICE_INTERVAL_MINUTES} min, "
-        f"batch size: {PRICE_BATCH_SIZE}, "
-        f"nightly cron: {NIGHTLY_CRON}"
+        f"interval: {PRICE_INTERVAL_MINUTES} min, "
+        f"US batch: {PRICE_BATCH_SIZE}, "
+        f"CA batch: {CA_PRICE_BATCH_SIZE}, "
+        f"nightly: {NIGHTLY_CRON}"
     )
 
 
 def stop_scheduler():
-    """Stop scheduler gracefully on app shutdown."""
     global _scheduler
     if _scheduler and _scheduler.running:
         _scheduler.shutdown(wait=False)
         logger.info("Scheduler stopped")
 
 
-def push_to_queue(symbols: list[str]):
-    """
-    Public entry point for import flow to push new symbols to queue.
-    Delegates to price_service queue.
-    """
+def push_to_queue(symbols: list[str], priority: bool = False):
+    """Public entry point for import flow to push symbols to correct queue."""
     from app.services.price_service import push_to_queue as _push
-    _push(symbols)
+    _push(symbols, priority=priority)

@@ -47,7 +47,8 @@ def recalculate_holdings(db: Session, account_id: str):
                 trade_currency,
                 commission,
                 fx_rate_to_cad,
-                description
+                description,
+                notes
             FROM transactions
             WHERE account_id = :account_id
             AND transaction_type IN (
@@ -148,12 +149,42 @@ def recalculate_holdings(db: Session, account_id: str):
                 h['acb_per_share'] = h['total_acb'] / h['qty']
 
         elif txn.transaction_type == 'CORPORATE_ACTION':
-            # Name change — zero out old symbol
-            # New symbol will have its own transactions
-            if h['qty'] > TINY:
-                h['qty'] = ZERO
-                h['total_acb'] = ZERO
-                h['is_open'] = False
+            # Check if this is a symbol rename (notes = "RENAME_FROM:OLD_SYMBOL")
+            txn_notes = txn.notes or ''
+            if 'RENAME_FROM:' in txn_notes:
+                old_symbol = txn_notes.split('RENAME_FROM:', 1)[1].strip()
+
+                if old_symbol and old_symbol in holdings_calc:
+                    # Transfer everything from old symbol to new symbol
+                    old_data = holdings_calc[old_symbol]
+                    if symbol not in holdings_calc:
+                        holdings_calc[symbol] = {
+                            'qty': ZERO,
+                            'total_acb': ZERO,
+                            'acb_per_share': ZERO,
+                            'currency': old_data['currency'],
+                            'asset_type': txn.asset_type or old_data['asset_type'],
+                            'realized_gain_loss': old_data['realized_gain_loss'],
+                            'total_proceeds': old_data['total_proceeds'],
+                            'total_cost_sold': old_data['total_cost_sold'],
+                            'is_open': old_data['is_open']
+                        }
+                    # Transfer position from old to new
+                    holdings_calc[symbol]['qty'] = old_data['qty']
+                    holdings_calc[symbol]['total_acb'] = old_data['total_acb']
+                    holdings_calc[symbol]['acb_per_share'] = old_data['acb_per_share']
+                    holdings_calc[symbol]['is_open'] = old_data['is_open']
+
+                    # Close old symbol position
+                    old_data['qty'] = ZERO
+                    old_data['total_acb'] = ZERO
+                    old_data['is_open'] = False
+            else:
+                # Generic corporate action — close old symbol
+                if h['qty'] > TINY:
+                    h['qty'] = ZERO
+                    h['total_acb'] = ZERO
+                    h['is_open'] = False
 
         elif txn.transaction_type == 'NORBERT_GAMBIT':
             # Treat as FX conversion — no stock position change

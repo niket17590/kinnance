@@ -3,12 +3,13 @@ from sqlalchemy import text
 from uuid import UUID
 from datetime import date
 import json
+import logging
 
 from app.parsers.base_parser import ParseResult
 from app.parsers.wealthsimple_parser import WealthSimpleParser
 from app.parsers.questrade_parser import QuestradeParser
 from app.parsers.ibkr_parser import IBKRParser
-
+logger = logging.getLogger(__name__)
 
 # ============================================================
 # PARSERS
@@ -351,6 +352,32 @@ def run_import(
 
         total_transactions = len(parse_result.transactions)
 
+        # Resolve canonical symbols for CAD bare tickers (e.g. QESS → QESS.CN)
+        # Collect unique bare CAD symbols first — resolve each once, then apply to all
+        from app.services.price_service import resolve_canonical_symbol, _is_canadian
+
+        unique_bare_cad = set(
+            txn.symbol_normalized
+            for txn in parse_result.transactions
+            if txn.symbol_normalized
+            and txn.trade_currency == 'CAD'
+            and not _is_canadian(txn.symbol_normalized)
+        )
+
+        # Resolve each unique symbol once
+        resolution_map = {}
+        for sym in unique_bare_cad:
+            canonical = resolve_canonical_symbol(db, sym, 'CAD')
+            if canonical != sym:
+                resolution_map[sym] = canonical
+                logger.info(f"Symbol resolved: {sym} → {canonical}")
+
+        # Apply resolutions to all transactions
+        if resolution_map:
+            for txn in parse_result.transactions:
+                if txn.symbol_normalized in resolution_map:
+                    txn.symbol_normalized = resolution_map[txn.symbol_normalized]
+
         # Build account mapping from:
         # 1. Saved mappings in broker_account_mappings table
         # 2. User confirmed mappings from this upload (then save them)
@@ -411,6 +438,15 @@ def run_import(
 
             if existing:
                 duplicates_skipped += 1
+                logger.info(
+                    f"Duplicate skipped: {txn.transaction_type} "
+                    f"{txn.symbol_normalized or ''} "
+                    f"{txn.trade_date} "
+                    f"qty={txn.quantity} "
+                    f"net={txn.net_amount} "
+                    f"currency={txn.trade_currency} "
+                    f"account={txn.broker_account_identifier}"
+                )
                 continue
 
             # Insert
@@ -507,6 +543,21 @@ def run_import(
             and t.broker_account_identifier not in skipped_accounts
         ))
 
+        # Collect symbol renames from CORPORATE_ACTION transactions
+        # notes field contains "RENAME_FROM:OLD_SYMBOL"
+        renamed_symbols = {}
+        for t in parse_result.transactions:
+            if (t.transaction_type == 'CORPORATE_ACTION'
+                    and t.notes
+                    and t.notes.startswith('RENAME_FROM:')
+                    and t.symbol_normalized
+                    and t.broker_account_identifier not in skipped_accounts):
+                old_sym = t.notes.split('RENAME_FROM:', 1)[1].strip()
+                renamed_symbols[old_sym] = t.symbol_normalized
+                # Also add new symbol to imported_symbols for price fetching
+                if t.symbol_normalized not in imported_symbols:
+                    imported_symbols.append(t.symbol_normalized)
+
         return {
             "status": "COMPLETE",
             "batch_id": batch_id,
@@ -518,6 +569,7 @@ def run_import(
             "date_to": str(date_to) if date_to else None,
             "parse_errors": parse_result.errors[:10],
             "imported_symbols": imported_symbols,
+            "renamed_symbols": renamed_symbols,  # {old: new}
         }
 
     except Exception as e:

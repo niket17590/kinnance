@@ -883,3 +883,11 @@ ALTER TABLE holdings ADD CONSTRAINT chk_holding_asset_type CHECK (
         'STOCK', 'ETF', 'CRYPTO', 'REIT', 'PREFERRED', 'OTHER'
     )
 );
+
+CREATE TABLE symbol_aliases (
+    bare_symbol      TEXT PRIMARY KEY,
+    canonical_symbol TEXT NOT NULL,
+    exchange         TEXT,
+    country          TEXT,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);

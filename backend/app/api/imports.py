@@ -1,18 +1,72 @@
+import logging
+import json
+from uuid import UUID
+
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, status, BackgroundTasks
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from uuid import UUID
-import json
 
 from app.core.database import get_db, SessionLocal
 from app.core.security import get_current_db_user
 from app.services import import_service
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/imports", tags=["imports"])
 
 ALLOWED_BROKERS = {'WEALTHSIMPLE', 'QUESTRADE', 'IBKR'}
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
 
+
+# ============================================================
+# BACKGROUND TASK
+# Runs after import completes — does NOT block the response.
+# 1. Fetch company info for new symbols (yfinance)
+# 2. Push new symbols to FRONT of price queue (priority fetch)
+#    Scheduler handles actual price fetching in controlled batches
+# ============================================================
+
+def _post_import_task(symbols: list[str], renamed_symbols: dict = None):
+    """
+    Background task fired after a successful import.
+    - Fetches security info for new symbols (yfinance)
+    - Pushes new symbols to front of price queue
+    - Handles symbol renames: disables old symbol, adds new one
+      renamed_symbols = {old_symbol: new_symbol}
+    """
+    bg_db = SessionLocal()
+    try:
+        from app.services.price_service import ensure_securities_exist, push_to_queue
+
+        # Handle symbol renames — disable old, enable new
+        if renamed_symbols:
+            for old_sym, new_sym in renamed_symbols.items():
+                # Disable old symbol in security_master and price_cache
+                bg_db.execute(
+                    text("UPDATE security_master SET is_active = FALSE, updated_at = NOW() WHERE symbol = :sym"),
+                    {"sym": old_sym}
+                )
+                bg_db.execute(
+                    text("DELETE FROM price_cache WHERE symbol = :sym"),
+                    {"sym": old_sym}
+                )
+                bg_db.commit()
+                logger.info(f"Disabled old symbol {old_sym} → renamed to {new_sym}")
+
+        # Fetch company info for new symbols
+        ensure_securities_exist(bg_db, symbols)
+        # Push to front of queue — scheduler fetches prices on next run
+        push_to_queue(symbols, priority=True)
+        logger.info(f"Post-import task complete for {len(symbols)} symbols")
+    except Exception as e:
+        logger.error(f"Post-import background task failed: {e}")
+    finally:
+        bg_db.close()
+
+
+# ============================================================
+# ROUTES
+# ============================================================
 
 @router.post("/parse")
 async def parse_file(
@@ -23,10 +77,8 @@ async def parse_file(
     current_user=Depends(get_current_db_user)
 ):
     """
-    Step 1: Parse file and match accounts. Does NOT import.
-    Returns account mapping status.
-    If status=NEEDS_MAPPING: show unmatched accounts to user.
-    If status=READY: proceed directly to import.
+    Step 1: Parse file and check account mappings. Does NOT import.
+    Returns NEEDS_MAPPING or READY status.
     """
     broker_code = broker_code.upper()
     if broker_code not in ALLOWED_BROKERS:
@@ -66,10 +118,13 @@ async def do_import(
 ):
     """
     Step 2: Run the actual import.
-    After import, fires a background task to:
-      - Fetch security info for new symbols (yfinance)
-      - Push new symbols to rolling price queue
-      - Trigger immediate price fetch for new symbols
+
+    confirmed_mappings: JSON {broker_identifier: kinnance_account_id}
+    skipped_accounts:   JSON [broker_identifier, ...]
+
+    After import, fires a background task to fetch security info
+    for new symbols and push them to the front of the price queue.
+    Scheduler handles price fetching in controlled batches (respects API limits).
     """
     broker_code = broker_code.upper()
 
@@ -99,30 +154,11 @@ async def do_import(
         skipped_accounts=skipped
     )
 
-    # Background task — fetch security info + prices for new symbols
+    # Fire background task for new symbols
     imported_symbols = result.get("imported_symbols", [])
-    if imported_symbols and result.get("status") == "COMPLETE":
-        def _bg_task(symbols: list[str]):
-            bg_db = SessionLocal()
-            try:
-                from app.services.price_service import (
-                    ensure_securities_exist,
-                    refresh_prices,
-                    push_to_queue
-                )
-                # 1. Fetch company info for new symbols (yfinance)
-                ensure_securities_exist(bg_db, symbols)
-                # 2. Push all symbols to rolling queue
-                push_to_queue(symbols)
-                # 3. Fetch prices immediately for new symbols
-                refresh_prices(bg_db, symbols)
-            except Exception as e:
-                import logging
-                logging.getLogger(__name__).error(f"Background price fetch failed: {e}")
-            finally:
-                bg_db.close()
-
-        background_tasks.add_task(_bg_task, imported_symbols)
+    renamed_symbols = result.get("renamed_symbols", {})
+    if (imported_symbols or renamed_symbols) and result.get("status") == "COMPLETE":
+        background_tasks.add_task(_post_import_task, imported_symbols, renamed_symbols)
 
     return result
 

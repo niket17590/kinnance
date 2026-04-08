@@ -20,16 +20,25 @@ QT_ACCOUNT_TYPE_MAP = {
     'corporate margin':  'CORP_MARGIN',
 }
 
-# Map Questrade Activity Type + Action to our transaction types
-QT_TYPE_MAP = {
-    'Trades_Buy': 'BUY',
+# Primary mapping by Activity Type — unambiguous types
+QT_ACTIVITY_MAP = {
+    'Deposits':           'DEPOSIT',
+    'Withdrawals':        'WITHDRAWAL',
+    'FX conversion':      'FX_CONVERSION',
+    'Fees and rebates':   'FEE',
+    'Corporate actions':  'CORPORATE_ACTION',
+    'Dividends':          'DIVIDEND',
+    'Interest':           'INTEREST',
+}
+
+# Symbols used exclusively for Norbert Gambit FX conversion
+# These should never appear as holdings
+NORBERT_GAMBIT_SYMBOLS = {'DLR.TO', 'DLR', 'G036247'}
+
+# Override mapping for ambiguous Activity Types (Trades, Other)
+QT_ACTION_OVERRIDE_MAP = {
+    'Trades_Buy':  'BUY',
     'Trades_Sell': 'SELL',
-    'Deposits_DEP': 'DEPOSIT',
-    'Withdrawals_EFT': 'WITHDRAWAL',
-    'FX conversion_FXT': 'FX_CONVERSION',
-    'Fees and rebates_FCH': 'FEE',
-    'Corporate actions_NAC': 'CORPORATE_ACTION',
-    'Other_BRW': 'NORBERT_GAMBIT',
 }
 
 
@@ -42,15 +51,14 @@ class QuestradeParser(BaseParser):
         Quantity, Price, Gross Amount, Commission, Net Amount,
         Currency, Account #, Activity Type, Account Type
 
-    Key quirks:
-        - Account # is a real number (40132143) — most reliable identifier
-        - FX conversion = 2 rows same date, one per currency — must pair
-        - BRW = Norbert Gambit (DLR ETF FX method) — treat as FX_CONVERSION
-        - FCH = Fee rows often come in pairs (fee + HST same date)
-        - NAC = Corporate action name change (2 rows: remove old, add new)
-        - G036247 = Questrade internal code for DLR.TO
-        - Date format: datetime object from openpyxl
-        - Quantity/Price are strings with many decimals
+    Transaction type resolution:
+        - Primary: Activity Type (Deposits→DEPOSIT, Withdrawals→WITHDRAWAL etc.)
+        - Override: Activity Type + Action for Trades (Buy/Sell)
+        - BRW (Norbert Gambit journal rows): skipped — cash impact already
+          captured by the underlying DLR BUY/SELL trade rows
+        - FCH fee rows: paired by date+account (fee + HST combined into one)
+        - FXT FX conversion rows: paired by date+account (CAD + USD combined)
+        - NAC corporate action removal rows (qty<0, amount=0): skipped
     """
 
     def parse(self, file_content: bytes, filename: str) -> ParseResult:
@@ -106,16 +114,52 @@ class QuestradeParser(BaseParser):
                         result.broker_account_types[account_number] = type_code
 
                 # Determine transaction type
+                # 1. Check action override first (Trades_Buy, Trades_Sell)
                 type_key = f"{activity_type}_{action}"
-                txn_type = QT_TYPE_MAP.get(type_key)
+                txn_type = QT_ACTION_OVERRIDE_MAP.get(type_key)
+
+                # 2. Fall back to activity type mapping
+                if not txn_type:
+                    txn_type = QT_ACTIVITY_MAP.get(activity_type)
+
+                # 3. Skip BRW (Norbert Gambit journal entries)
+                #    These are reporting-only rows with net_amount=0
+                #    The actual cash impact is captured by the BUY/SELL trade rows
+                if action == 'BRW':
+                    self.log_skip(row_num, f"BRW journal entry — skipped (cash captured by trade rows)")
+                    continue
 
                 if not txn_type:
-                    self.log_skip(row_num, f"Unknown type: {type_key}")
+                    self.log_skip(row_num, f"Unknown activity: {activity_type} / {action}")
                     continue
 
                 symbol_norm = normalize_symbol(symbol)
-                net_amount_cad = net_amount if currency == 'CAD' else Decimal(
-                    '0')
+
+                # Norbert Gambit detection — DLR.TO/G036247 BUY/SELL trades
+                # are currency conversions, not real stock positions.
+                # Convert to FX_CONVERSION so cash balances update correctly
+                # but no holding is created.
+                if txn_type in ('BUY', 'SELL') and symbol_norm in NORBERT_GAMBIT_SYMBOLS:
+                    self.log_skip(
+                        row_num,
+                        f"Norbert Gambit trade ({symbol_norm}) — treated as FX_CONVERSION, no holding created"
+                    )
+                    # Still record it as FX_CONVERSION for cash balance tracking
+                    txn = ParsedTransaction(
+                        transaction_type='FX_CONVERSION',
+                        trade_date=trade_date,
+                        settlement_date=settlement_date,
+                        trade_currency=currency,
+                        net_amount=net_amount,
+                        net_amount_cad=net_amount if currency == 'CAD' else Decimal('0'),
+                        broker_account_identifier=account_number,
+                        description=f"Norbert Gambit — {description}",
+                        raw_data={'row': str(row)}
+                    )
+                    result.transactions.append(txn)
+                    continue
+
+                net_amount_cad = net_amount if currency == 'CAD' else Decimal('0')
 
                 # Handle FX conversion pairs (FXT)
                 if txn_type == 'FX_CONVERSION':
@@ -153,38 +197,6 @@ class QuestradeParser(BaseParser):
                             raw_data={'row': str(row)}
                         )
                         fx_buffer[fx_key] = buffered
-                    continue
-
-                # Handle Norbert Gambit (BRW + DLR)
-                if txn_type == 'NORBERT_GAMBIT':
-                    # Extract FX rate from description if available
-                    # "JOURNAL POSITION FROM USD BOOK VALUE: $19412.19 CNV@ 1.3771"
-                    fx_rate = None
-                    if 'CNV@' in description:
-                        try:
-                            rate_str = description.split(
-                                'CNV@')[1].strip().split()[0]
-                            fx_rate = Decimal(rate_str)
-                        except Exception:
-                            pass
-
-                    txn = ParsedTransaction(
-                        transaction_type='NORBERT_GAMBIT',
-                        trade_date=trade_date,
-                        settlement_date=settlement_date,
-                        trade_currency=currency,
-                        net_amount=net_amount,
-                        net_amount_cad=net_amount_cad,
-                        broker_account_identifier=account_number,
-                        symbol=symbol,
-                        symbol_normalized='DLR.TO',
-                        asset_type='ETF',
-                        description=description,
-                        quantity=abs(quantity) if quantity != 0 else None,
-                        fx_rate_to_cad=fx_rate,
-                        raw_data={'row': str(row)}
-                    )
-                    result.transactions.append(txn)
                     continue
 
                 # Handle fee pairs (FCH fee + HST = combine)
