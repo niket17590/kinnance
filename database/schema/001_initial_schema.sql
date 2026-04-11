@@ -891,3 +891,5 @@ CREATE TABLE symbol_aliases (
     country          TEXT,
     created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE transactions DROP CONSTRAINT transactions_import_hash_key;

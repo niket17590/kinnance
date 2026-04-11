@@ -353,30 +353,17 @@ def run_import(
         total_transactions = len(parse_result.transactions)
 
         # Resolve canonical symbols for CAD bare tickers (e.g. QESS → QESS.CN)
-        # Collect unique bare CAD symbols first — resolve each once, then apply to all
+        # This normalizes WealthSimple bare tickers to exchange-suffixed form
+        # Uses symbol_aliases table first, then Twelve Data symbol_search as fallback
         from app.services.price_service import resolve_canonical_symbol, _is_canadian
-
-        unique_bare_cad = set(
-            txn.symbol_normalized
-            for txn in parse_result.transactions
-            if txn.symbol_normalized
-            and txn.trade_currency == 'CAD'
-            and not _is_canadian(txn.symbol_normalized)
-        )
-
-        # Resolve each unique symbol once
-        resolution_map = {}
-        for sym in unique_bare_cad:
-            canonical = resolve_canonical_symbol(db, sym, 'CAD')
-            if canonical != sym:
-                resolution_map[sym] = canonical
-                logger.info(f"Symbol resolved: {sym} → {canonical}")
-
-        # Apply resolutions to all transactions
-        if resolution_map:
-            for txn in parse_result.transactions:
-                if txn.symbol_normalized in resolution_map:
-                    txn.symbol_normalized = resolution_map[txn.symbol_normalized]
+        for txn in parse_result.transactions:
+            if (txn.symbol_normalized
+                    and txn.trade_currency == 'CAD'
+                    and not _is_canadian(txn.symbol_normalized)):
+                canonical = resolve_canonical_symbol(db, txn.symbol_normalized, 'CAD')
+                if canonical != txn.symbol_normalized:
+                    logger.info(f"Symbol resolved: {txn.symbol_normalized} → {canonical}")
+                    txn.symbol_normalized = canonical
 
         # Build account mapping from:
         # 1. Saved mappings in broker_account_mappings table
@@ -430,11 +417,16 @@ def run_import(
 
             import_hash = txn.compute_hash()
 
-            # Duplicate check
+            # Duplicate check — same hash in a DIFFERENT batch = duplicate
             existing = db.execute(
-                text("SELECT id FROM transactions WHERE import_hash = :hash"),
-                {"hash": import_hash},
+                text("""
+                    SELECT id FROM transactions 
+                    WHERE import_hash = :hash 
+                    AND import_batch_id != :batch_id
+                """),
+                {"hash": import_hash, "batch_id": str(batch_id)},
             ).fetchone()
+            
 
             if existing:
                 duplicates_skipped += 1

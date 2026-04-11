@@ -176,7 +176,7 @@ const navItems = [
     ],
   },
   {
-    group: "Admin",
+    group: "Manage",
     items: [
       {
         path: "/admin/members",
@@ -259,21 +259,27 @@ const navItems = [
         ),
       },
       {
-        path: "/admin/settings",
-        label: "Settings",
+        path: "/admin/portfolio-tools",
+        label: "Portfolio Tools",
         icon: (
           <svg viewBox="0 0 18 18" fill="none" width="18" height="18">
+            <path
+              d="M2 4h14M2 9h9M2 14h5"
+              stroke="currentColor"
+              strokeWidth="1.3"
+              strokeLinecap="round"
+            />
             <circle
-              cx="9"
-              cy="9"
-              r="2.5"
+              cx="14"
+              cy="13"
+              r="3"
               stroke="currentColor"
               strokeWidth="1.2"
             />
             <path
-              d="M9 1v2M9 15v2M1 9h2M15 9h2M3.22 3.22l1.42 1.42M13.36 13.36l1.42 1.42M3.22 14.78l1.42-1.42M13.36 4.64l1.42-1.42"
+              d="M13 13h2M14 12v2"
               stroke="currentColor"
-              strokeWidth="1.2"
+              strokeWidth="1.1"
               strokeLinecap="round"
             />
           </svg>

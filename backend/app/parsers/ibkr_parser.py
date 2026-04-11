@@ -1,41 +1,32 @@
 import csv
 import io
-from decimal import Decimal
-from typing import Optional
 from .base_parser import (
     BaseParser, ParseResult, ParsedTransaction,
     normalize_symbol, detect_asset_type
 )
 
-IBKR_TYPE_MAP = {
-    'Buy': 'BUY',
-    'Sell': 'SELL',
-    'Deposit': 'DEPOSIT',
-    'Withdrawal': 'WITHDRAWAL',
-    'Forex Trade Component': 'FX_CONVERSION',
-}
 
-# IBKR uses these descriptions for internal account transfers
-INTERNAL_TRANSFER_DESCRIPTIONS = {'Cash Transfer'}
 
 
 class IBKRParser(BaseParser):
     """
     Parser for IBKR CSV Transaction History exports.
 
-    Format: Multi-section CSV — must filter for Transaction History rows only.
-    Columns after filtering:
+    Columns (after filtering Transaction History / Data rows):
         Date, Account, Description, Transaction Type, Symbol,
         Quantity, Price, Price Currency, Gross Amount, Commission, Net Amount
+        [Sub Type — optional, only in some exports]
 
-    Key quirks:
-        - Must skip rows where col[0] != 'Transaction History' or col[1] != 'Data'
-        - Account uses alias names: Individual Cash, TFSA, FHSA
-        - Gross/Net amounts already in CAD (base currency)
-        - Price Currency tells you the original trade currency
-        - FX Translations P&L / Adjustment rows = SKIP (unrealized FX)
-        - Cash Transfer = INTERNAL_TRANSFER between accounts
-        - Commission is always in CAD
+    Key rules:
+        - Deposits/Withdrawals → always CAD (IBKR doesn't specify currency)
+        - BUY/SELL → trade_currency from Price Currency column (usually USD)
+          net_amount is IBKR's CAD-converted figure — we use it directly
+        - Forex Trade Component → FX_CONVERSION, qty=USD amount, price=FX rate
+          skip tiny rounding rows (qty < $1 USD)
+        - Credit Interest → INTEREST in CAD
+        - Adjustment / FX Translations P&L → skip (unrealized FX, not real)
+        - Cash Transfer description → INTERNAL_TRANSFER
+        - Options (symbol contains C/P strike format) → skip for now
     """
 
     def parse(self, file_content: bytes, filename: str) -> ParseResult:
@@ -52,55 +43,66 @@ class IBKRParser(BaseParser):
                 if row[0].strip() != 'Transaction History':
                     continue
                 if row[1].strip() == 'Header':
-                    continue  # Skip the header row
+                    continue
                 if row[1].strip() != 'Data':
                     continue
-
-                # Data row: Transaction History,Data,date,account,...
                 if len(row) < 13:
-                    self.log_error(
-                        row_num, f"Insufficient columns: {
-                            len(row)}")
+                    self.log_error(row_num, f"Insufficient columns: {len(row)}")
                     continue
 
-                trade_date = self.safe_date(row[2].strip())
-                account_alias = row[3].strip()
-                description = row[4].strip()
-                txn_type_raw = row[5].strip()
-                symbol = row[6].strip() or None
-                quantity_raw = row[7].strip()
-                price_raw = row[8].strip()
-                price_currency = row[9].strip().upper()
-                gross_raw = row[10].strip()
-                commission_raw = row[11].strip()
-                net_raw = row[12].strip()
+                trade_date      = self.safe_date(row[2].strip())
+                account_alias   = row[3].strip()
+                description     = row[4].strip()
+                txn_type_raw    = row[5].strip()
+                symbol_raw      = row[6].strip()
+                quantity_raw    = row[7].strip()
+                price_raw       = row[8].strip()
+                price_currency  = row[9].strip().upper()
+                commission_raw  = row[11].strip()
+                net_raw         = row[12].strip()
 
                 if not trade_date:
                     self.log_error(row_num, f"Invalid date: {row[2]}")
                     continue
-
                 if not account_alias:
                     self.log_error(row_num, 'Missing account alias')
                     continue
 
+                # Track unique accounts
                 if account_alias not in result.broker_accounts_found:
                     result.broker_accounts_found.append(account_alias)
 
-                # Skip FX Translations P&L — unrealized FX gain/loss, not real
-                if txn_type_raw == 'Adjustment' and 'FX Translations' in description:
-                    self.log_skip(
-                        row_num, 'FX Translations P&L adjustment — skipped')
+                quantity   = self.safe_decimal(quantity_raw)
+                price      = self.safe_decimal(price_raw)
+                commission = self.safe_decimal(commission_raw)
+                net_cad    = self.safe_decimal(net_raw)
+                symbol     = symbol_raw if symbol_raw and symbol_raw != '-' else None
+
+                # ── Skip adjustment rows ──────────────────────────────────
+                if txn_type_raw == 'Adjustment':
+                    self.log_skip(row_num, f"Adjustment skipped: {description}")
                     continue
 
-                # Detect internal transfers
-                if description in INTERNAL_TRANSFER_DESCRIPTIONS:
-                    net_amount = self.safe_decimal(net_raw)
+                # ── Skip option trades (future feature) ───────────────────
+                if symbol and detect_asset_type(symbol, description) == 'OPTION':
+                    self.log_skip(row_num, f"Option trade skipped: {symbol}")
+                    continue
+
+                # ── Internal transfers (Cash Transfer) ────────────────────
+                if description == 'Cash Transfer':
+                    txn_type = 'INTERNAL_TRANSFER' if net_cad >= 0 else 'WITHDRAWAL'
+                    # Determine sign — Cash Transfer can be in or out
+                    # Use transaction type raw to determine direction
+                    if txn_type_raw == 'Withdrawal':
+                        txn_type = 'WITHDRAWAL'
+                    elif txn_type_raw == 'Deposit':
+                        txn_type = 'INTERNAL_TRANSFER'
                     txn = ParsedTransaction(
-                        transaction_type='INTERNAL_TRANSFER',
+                        transaction_type=txn_type,
                         trade_date=trade_date,
                         trade_currency='CAD',
-                        net_amount=net_amount,
-                        net_amount_cad=net_amount,
+                        net_amount=net_cad,
+                        net_amount_cad=net_cad,
                         broker_account_identifier=account_alias,
                         description=description,
                         raw_data={'row': row}
@@ -108,35 +110,68 @@ class IBKRParser(BaseParser):
                     result.transactions.append(txn)
                     continue
 
-                txn_type = IBKR_TYPE_MAP.get(txn_type_raw)
-                if not txn_type:
-                    self.log_skip(
-                        row_num, f"Unknown transaction type: {txn_type_raw}")
+                # ── Deposits ─────────────────────────────────────────────
+                if txn_type_raw == 'Deposit':
+                    txn = ParsedTransaction(
+                        transaction_type='DEPOSIT',
+                        trade_date=trade_date,
+                        trade_currency='CAD',
+                        net_amount=net_cad,
+                        net_amount_cad=net_cad,
+                        broker_account_identifier=account_alias,
+                        description=description,
+                        raw_data={'row': row}
+                    )
+                    result.transactions.append(txn)
                     continue
 
-                # IBKR amounts are in CAD (base currency)
-                # price_currency tells us original trade currency
-                trade_currency = price_currency if price_currency in (
-                    'CAD', 'USD') else 'USD'
-                net_amount_cad = self.safe_decimal(net_raw)
-                commission = self.safe_decimal(commission_raw)
-                quantity = self.safe_decimal(quantity_raw)
-                price = self.safe_decimal(price_raw)
+                # ── Withdrawals ───────────────────────────────────────────
+                if txn_type_raw == 'Withdrawal':
+                    txn = ParsedTransaction(
+                        transaction_type='WITHDRAWAL',
+                        trade_date=trade_date,
+                        trade_currency='CAD',
+                        net_amount=net_cad,
+                        net_amount_cad=net_cad,
+                        broker_account_identifier=account_alias,
+                        description=description,
+                        raw_data={'row': row}
+                    )
+                    result.transactions.append(txn)
+                    continue
 
-                # For FX_CONVERSION rows
-                if txn_type == 'FX_CONVERSION':
-                    # "Net Amount in Base from Forex Trade: 4,291.66 USD.CAD"
-                    # The net_amount here is a tiny rounding adjustment in CAD
-                    # quantity = USD amount, price = FX rate
-                    usd_amount = quantity  # USD quantity
-                    fx_rate = price        # rate used
+                # ── Credit Interest ───────────────────────────────────────
+                if txn_type_raw == 'Credit Interest':
+                    txn = ParsedTransaction(
+                        transaction_type='INTEREST',
+                        trade_date=trade_date,
+                        trade_currency='CAD',
+                        net_amount=net_cad,
+                        net_amount_cad=net_cad,
+                        broker_account_identifier=account_alias,
+                        description=description,
+                        raw_data={'row': row}
+                    )
+                    result.transactions.append(txn)
+                    continue
+
+                # ── FX Conversion ─────────────────────────────────────────
+                # symbol=USD.CAD, qty=USD amount, price=FX rate, curr=CAD
+                # Skip tiny rounding rows (IBKR generates many of these)
+                if txn_type_raw == 'Forex Trade Component':
+                    usd_amount = quantity  # positive = buying USD with CAD
+                    fx_rate = price
+
+                    # CAD side is negative when buying USD (spending CAD)
+                    # CAD side is positive when selling USD (receiving CAD)
+                    cad_amount = -(usd_amount * fx_rate) if fx_rate else net_cad
 
                     txn = ParsedTransaction(
                         transaction_type='FX_CONVERSION',
                         trade_date=trade_date,
                         trade_currency='USD',
                         net_amount=usd_amount,
-                        net_amount_cad=usd_amount * fx_rate if fx_rate else net_amount_cad,
+                        net_amount_cad=cad_amount,
                         broker_account_identifier=account_alias,
                         fx_rate_to_cad=fx_rate if fx_rate != 0 else None,
                         description=description,
@@ -145,45 +180,47 @@ class IBKRParser(BaseParser):
                     result.transactions.append(txn)
                     continue
 
-                # For trades: calculate original USD amount from CAD amount
-                # net_amount_cad is already in CAD
-                # For reporting we store CAD amount, original currency amount
-                # estimated
-                if trade_currency == 'USD' and quantity != 0 and price != 0:
-                    net_amount_original = - \
-                        (quantity * price)  # negative for buys
-                    # Commission already in CAD
-                    # Try to derive FX rate
-                    if net_amount_original != 0:
-                        fx_rate = abs(net_amount_cad / net_amount_original) \
-                            if net_amount_original != 0 else None
+                # ── Buy / Sell ────────────────────────────────────────────
+                if txn_type_raw in ('Buy', 'Sell'):
+                    trade_currency = price_currency if price_currency in ('CAD', 'USD') else 'USD'
+
+                    # net_amount in trade currency — IBKR net_raw is in CAD
+                    # For USD trades: derive USD amount from qty × price
+                    # net_cad is IBKR's CAD conversion (includes commission in CAD)
+                    if trade_currency == 'USD' and quantity != 0 and price != 0:
+                        # qty is negative for sells, positive for buys
+                        net_usd = -(quantity * price)  # negative for buys, positive for sells
+                        # FX rate derived from IBKR's CAD conversion
+                        fx_rate = abs(net_cad / net_usd) if net_usd != 0 else None
                     else:
+                        net_usd = net_cad
                         fx_rate = None
-                        net_amount_original = net_amount_cad
-                else:
-                    net_amount_original = net_amount_cad
-                    fx_rate = None
 
-                symbol_norm = normalize_symbol(symbol)
+                    symbol_norm = normalize_symbol(symbol)
+                    txn_type = 'BUY' if txn_type_raw == 'Buy' else 'SELL'
 
-                txn = ParsedTransaction(
-                    transaction_type=txn_type,
-                    trade_date=trade_date,
-                    trade_currency=trade_currency,
-                    net_amount=net_amount_original,
-                    net_amount_cad=net_amount_cad,
-                    broker_account_identifier=account_alias,
-                    symbol=symbol if symbol and symbol != '-' else None,
-                    symbol_normalized=symbol_norm,
-                    asset_type=detect_asset_type(symbol_norm, description),
-                    description=description,
-                    quantity=abs(quantity) if quantity != 0 else None,
-                    price_per_unit=price if price != 0 else None,
-                    commission=abs(commission),
-                    fx_rate_to_cad=fx_rate,
-                    raw_data={'row': row}
-                )
-                result.transactions.append(txn)
+                    txn = ParsedTransaction(
+                        transaction_type=txn_type,
+                        trade_date=trade_date,
+                        trade_currency=trade_currency,
+                        net_amount=net_usd,
+                        net_amount_cad=net_cad,
+                        broker_account_identifier=account_alias,
+                        symbol=symbol,
+                        symbol_normalized=symbol_norm,
+                        asset_type=detect_asset_type(symbol_norm, description),
+                        description=description,
+                        quantity=abs(quantity) if quantity != 0 else None,
+                        price_per_unit=price if price != 0 else None,
+                        commission=abs(commission),
+                        fx_rate_to_cad=fx_rate,
+                        raw_data={'row': row}
+                    )
+                    result.transactions.append(txn)
+                    continue
+
+                # ── Unknown ───────────────────────────────────────────────
+                self.log_skip(row_num, f"Unknown transaction type: {txn_type_raw}")
 
         except Exception as e:
             result.errors.append(f"Fatal parse error: {str(e)}")

@@ -17,6 +17,7 @@ import Register from './pages/Register'
 import ForgotPassword from './pages/ForgotPassword'
 import AuthCallback from './pages/AuthCallback'
 import ContributionLimits from './pages/ContributionLimits'
+import PortfolioTools from './pages/admin/PortfolioTools'
 
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth()
@@ -70,6 +71,7 @@ function App() {
         <Route path="admin/import" element={<ImportCSV />} />
         <Route path="admin/settings" element={<Settings />} />
         <Route path="contribution-limits" element={<ContributionLimits />} />
+        <Route path="/admin/portfolio-tools" element={<PortfolioTools />} />
       </Route>
     </Routes>
   )
