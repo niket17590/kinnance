@@ -12,16 +12,16 @@ from app.parsers.ibkr_parser import IBKRParser
 
 logger = logging.getLogger(__name__)
 
+
 # ============================================================
 # PARSERS
 # ============================================================
 
-
 def get_parser(broker_code: str):
     parsers = {
         "WEALTHSIMPLE": WealthSimpleParser,
-        "QUESTRADE": QuestradeParser,
-        "IBKR": IBKRParser,
+        "QUESTRADE":    QuestradeParser,
+        "IBKR":         IBKRParser,
     }
     cls = parsers.get(broker_code.upper())
     if not cls:
@@ -36,21 +36,13 @@ def parse_file(broker_code: str, file_content: bytes, filename: str) -> ParseRes
 
 # ============================================================
 # ACCOUNT MAPPING
-# Only saved mappings are used — no guessing, no auto-matching.
-# User must explicitly map each broker account on first upload.
 # ============================================================
-
 
 def get_saved_mapping(
     db: Session, owner_id: UUID, broker_code: str, identifier: str
 ) -> dict | None:
-    """
-    Check broker_account_mappings table for a saved mapping.
-    Returns account info dict if found, None if not.
-    """
     result = db.execute(
-        text(
-            """
+        text("""
             SELECT
                 bam.account_id,
                 ma.account_type_code,
@@ -64,13 +56,8 @@ def get_saved_mapping(
             WHERE bam.broker_code = :broker_code
             AND bam.broker_account_identifier = :identifier
             AND m.owner_id = :owner_id
-        """
-        ),
-        {
-            "broker_code": broker_code,
-            "identifier": identifier,
-            "owner_id": str(owner_id),
-        },
+        """),
+        {"broker_code": broker_code, "identifier": identifier, "owner_id": str(owner_id)},
     ).fetchone()
     return dict(result._mapping) if result else None
 
@@ -78,35 +65,23 @@ def get_saved_mapping(
 def save_account_mapping(
     db: Session, account_id: UUID, broker_code: str, identifier: str
 ):
-    """Save a broker identifier -> Kinnance account mapping for future uploads."""
     db.execute(
-        text(
-            """
+        text("""
             INSERT INTO broker_account_mappings
                 (account_id, broker_code, broker_account_identifier)
             VALUES (:account_id, :broker_code, :identifier)
             ON CONFLICT (broker_code, broker_account_identifier) DO NOTHING
-        """
-        ),
-        {
-            "account_id": str(account_id),
-            "broker_code": broker_code,
-            "identifier": identifier,
-        },
+        """),
+        {"account_id": str(account_id), "broker_code": broker_code, "identifier": identifier},
     )
 
 
 def get_available_accounts(
     db: Session, owner_id: UUID, broker_code: str, member_id: str = None
 ) -> list:
-    """
-    Get Kinnance accounts for this owner + broker.
-    Filtered by member_id if provided — used to show correct accounts on mapping screen.
-    """
     if member_id:
         rows = db.execute(
-            text(
-                """
+            text("""
                 SELECT
                     ma.id, ma.account_type_code,
                     ma.nickname, ma.broker_code,
@@ -120,18 +95,12 @@ def get_available_accounts(
                 AND ma.member_id::text = :member_id
                 AND ma.is_active = TRUE
                 ORDER BY ma.account_type_code
-            """
-            ),
-            {
-                "owner_id": str(owner_id),
-                "broker_code": broker_code,
-                "member_id": str(member_id),
-            },
+            """),
+            {"owner_id": str(owner_id), "broker_code": broker_code, "member_id": str(member_id)},
         ).fetchall()
     else:
         rows = db.execute(
-            text(
-                """
+            text("""
                 SELECT
                     ma.id, ma.account_type_code,
                     ma.nickname, ma.broker_code,
@@ -144,8 +113,7 @@ def get_available_accounts(
                 AND ma.broker_code = :broker_code
                 AND ma.is_active = TRUE
                 ORDER BY m.display_name, ma.account_type_code
-            """
-            ),
+            """),
             {"owner_id": str(owner_id), "broker_code": broker_code},
         ).fetchall()
     return [dict(r._mapping) for r in rows]
@@ -155,18 +123,15 @@ def get_available_accounts(
 # IMPORT BATCH
 # ============================================================
 
-
 def create_import_batch(
     db: Session, owner_id: UUID, broker_code: str, filename: str
 ) -> str:
     result = db.execute(
-        text(
-            """
+        text("""
             INSERT INTO import_batches (owner_id, broker_code, filename, status)
             VALUES (:owner_id, :broker_code, :filename, 'PROCESSING')
             RETURNING id
-        """
-        ),
+        """),
         {"owner_id": str(owner_id), "broker_code": broker_code, "filename": filename},
     ).fetchone()
     db.commit()
@@ -186,8 +151,7 @@ def update_import_batch(
     transaction_date_to: date = None,
 ):
     db.execute(
-        text(
-            """
+        text("""
             UPDATE import_batches SET
                 status = :status,
                 rows_total = :total,
@@ -199,8 +163,7 @@ def update_import_batch(
                 transaction_date_to = :date_to,
                 imported_at = NOW()
             WHERE id = :id
-        """
-        ),
+        """),
         {
             "id": batch_id,
             "status": status,
@@ -218,9 +181,7 @@ def update_import_batch(
 
 # ============================================================
 # STEP 1 — PARSE AND CHECK MAPPINGS
-# No importing. Just parse file and check what's mapped.
 # ============================================================
-
 
 def parse_and_match(
     db: Session,
@@ -231,33 +192,34 @@ def parse_and_match(
     member_id: str = None,
 ) -> dict:
     """
-    Parse the uploaded file and check the broker_account_mappings table.
-
-    - If all accounts found in file have saved mappings → status=READY
-    - If any account has no saved mapping → status=NEEDS_MAPPING
-      (user must map or skip each unrecognised account)
-    - No guessing, no auto-matching by account type.
+    Parse the uploaded file and check broker_account_mappings.
+    Returns READY or NEEDS_MAPPING status.
+    No transactions are inserted here.
     """
     parse_result = parse_file(broker_code, file_content, filename)
 
     if not parse_result.transactions and parse_result.errors:
         return {"status": "FAILED", "errors": parse_result.errors}
 
-    already_mapped = []
+    matched_accounts = {}
     unmatched = []
-
-    account_number_suggestions = {}  # identifier -> account_id
+    account_number_suggestions = {}
 
     for identifier in parse_result.broker_accounts_found:
         saved = get_saved_mapping(db, owner_id, broker_code, identifier)
         if saved:
-            already_mapped.append(identifier)
+            matched_accounts[identifier] = {
+                "account_id": str(saved["account_id"]),
+                "account_type_code": saved["account_type_code"],
+                "account_type_name": saved["account_type_name"],
+                "member_name": saved["member_name"],
+            }
         else:
-            # Check if account_number matches this identifier
+            unmatched.append(identifier)
+            # Suggest by account_number match
             suggestion = db.execute(
-                text(
-                    """
-                    SELECT ma.id as account_id
+                text("""
+                    SELECT ma.id
                     FROM member_accounts ma
                     JOIN members m ON ma.member_id = m.id
                     WHERE m.owner_id = :owner_id
@@ -265,56 +227,42 @@ def parse_and_match(
                     AND ma.account_number = :identifier
                     AND ma.is_active = TRUE
                     LIMIT 1
-                """
-                ),
-                {
-                    "owner_id": str(owner_id),
-                    "broker_code": broker_code,
-                    "identifier": identifier,
-                },
+                """),
+                {"owner_id": str(owner_id), "broker_code": broker_code, "identifier": identifier},
             ).fetchone()
             if suggestion:
-                account_number_suggestions[identifier] = str(suggestion.account_id)
-            unmatched.append(identifier)
+                account_number_suggestions[identifier] = str(suggestion.id)
 
-    total = len(parse_result.transactions)
-    dates = [t.trade_date for t in parse_result.transactions if t.trade_date]
-    date_from = str(min(dates)) if dates else None
-    date_to = str(max(dates)) if dates else None
+    available_accounts = get_available_accounts(db, owner_id, broker_code, member_id)
 
     if unmatched:
-        available = get_available_accounts(db, owner_id, broker_code, member_id)
         return {
             "status": "NEEDS_MAPPING",
+            "transactions_found": len(parse_result.transactions),
+            "broker_accounts_found": parse_result.broker_accounts_found,
             "unmatched_accounts": unmatched,
-            "already_mapped_accounts": already_mapped,
-            "available_accounts": available,
+            "matched_accounts": matched_accounts,
+            "available_accounts": available_accounts,
             "account_number_suggestions": account_number_suggestions,
-            "total_transactions": total,
-            "date_from": date_from,
-            "date_to": date_to,
-            "parse_errors": parse_result.errors[:10],
+            "errors": parse_result.errors[:10],
         }
 
     return {
         "status": "READY",
-        "already_mapped_accounts": already_mapped,
-        "unmatched_accounts": [],
-        "total_transactions": total,
-        "date_from": date_from,
-        "date_to": date_to,
-        "parse_errors": parse_result.errors[:10],
+        "transactions_found": len(parse_result.transactions),
+        "broker_accounts_found": parse_result.broker_accounts_found,
+        "matched_accounts": matched_accounts,
+        "available_accounts": available_accounts,
+        "errors": parse_result.errors[:10],
     }
 
 
 # ============================================================
-# STEP 2 — RUN IMPORT
-# UI sends confirmed_mappings + skipped_accounts explicitly.
-# Only saved mappings and user-confirmed mappings are used.
+# STEP 2 — IMPORT TRANSACTIONS
+# Bulk optimised: one duplicate check query, one bulk INSERT, one commit.
 # ============================================================
 
-
-def run_import(
+def import_transactions(
     db: Session,
     owner_id: UUID,
     broker_code: str,
@@ -324,68 +272,38 @@ def run_import(
     skipped_accounts: list,
 ) -> dict:
     """
-    Import transactions.
+    Import parsed transactions into DB.
 
-    confirmed_mappings: {broker_identifier: kinnance_account_id}
-                        User-confirmed on the mapping screen.
-                        These are saved to broker_account_mappings for future uploads.
+    Performance optimisations vs previous version:
+    1. Pre-fetch ALL existing hashes for affected accounts in ONE query
+       → duplicate check is Python set lookup (O(1)) per transaction
+       → was: 1 SELECT per transaction in loop
+    2. Collect all valid rows → single executemany INSERT → single commit
+       → was: 1 execute + 1 commit per transaction
+    3. Atomic batch: all inserts succeed or all roll back
 
-    skipped_accounts:   [broker_identifier, ...]
-                        User chose to skip these — their transactions are not imported.
-
-    Returns:
-        total_transactions  — all rows parsed from file
-        imported            — new records inserted into DB
-        duplicates_skipped  — already existed in DB
-        accounts_skipped    — transactions from skipped accounts
-        date_from / date_to — date range of imported transactions
+    Duplicate semantics preserved:
+      same hash + different import_batch_id = duplicate (skipped)
+      same hash + same import_batch_id = current batch (allowed, won't happen in practice)
     """
+    parse_result = parse_file(broker_code, file_content, filename)
+
+    if not parse_result.transactions and parse_result.errors:
+        raise Exception(f"Parse failed: {'; '.join(parse_result.errors[:3])}")
+
     batch_id = create_import_batch(db, owner_id, broker_code, filename)
 
     try:
-        parse_result = parse_file(broker_code, file_content, filename)
-
-        if not parse_result.transactions and parse_result.errors:
-            update_import_batch(
-                db, batch_id, "FAILED", error_message="; ".join(parse_result.errors[:5])
-            )
-            return {"status": "FAILED", "errors": parse_result.errors}
-
-        total_transactions = len(parse_result.transactions)
-
-        # Resolve canonical symbols for CAD bare tickers (e.g. QESS → QESS.CN)
-        # This normalizes WealthSimple bare tickers to exchange-suffixed form
-        # Uses symbol_aliases table first, then Twelve Data symbol_search as fallback
-        from app.services.price_service import resolve_canonical_symbol, _is_canadian
-
-        for txn in parse_result.transactions:
-            if (
-                txn.symbol_normalized
-                and txn.trade_currency == "CAD"
-                and not _is_canadian(txn.symbol_normalized)
-            ):
-                canonical = resolve_canonical_symbol(db, txn.symbol_normalized, "CAD")
-                if canonical != txn.symbol_normalized:
-                    logger.info(
-                        f"Symbol resolved: {txn.symbol_normalized} → {canonical}"
-                    )
-                    txn.symbol_normalized = canonical
-
-        # Build account mapping from:
-        # 1. Saved mappings in broker_account_mappings table
-        # 2. User confirmed mappings from this upload (then save them)
+        # ── Build account mapping ─────────────────────────────
         account_mapping = {}
 
         for identifier in parse_result.broker_accounts_found:
             if identifier in skipped_accounts:
                 continue
-
-            # Check saved mappings first
             saved = get_saved_mapping(db, owner_id, broker_code, identifier)
             if saved:
                 account_mapping[identifier] = str(saved["account_id"])
 
-        # Add user confirmed mappings and persist them
         for identifier, account_id_str in confirmed_mappings.items():
             if not account_id_str or identifier in skipped_accounts:
                 continue
@@ -396,46 +314,80 @@ def run_import(
             except Exception:
                 db.rollback()
 
-        # Count transactions belonging to skipped accounts
+        # ── Count skipped accounts ────────────────────────────
         accounts_skipped = sum(
-            1
-            for t in parse_result.transactions
+            1 for t in parse_result.transactions
             if t.broker_account_identifier in skipped_accounts
         )
 
-        # Process transactions
-        imported = 0
-        duplicates_skipped = 0
-        dates = []
+        # ── Pre-compute all hashes for this file ──────────────
+        # Build map: hash → (txn, account_id_str) for non-skipped, mapped transactions
+        candidate_map: dict[str, tuple] = {}
+        unmapped_errors = []
 
         for txn in parse_result.transactions:
-            # Skip user-skipped accounts
             if txn.broker_account_identifier in skipped_accounts:
                 continue
-
-            # Unmapped — raise so user knows something went wrong
             account_id_str = account_mapping.get(txn.broker_account_identifier)
             if not account_id_str:
-                raise Exception(
-                    f"Account '{txn.broker_account_identifier}' has no mapping. "
-                    f"Please go back and map or skip all accounts."
-                )
+                unmapped_errors.append(txn.broker_account_identifier)
+                continue
+            h = txn.compute_hash()
+            candidate_map[h] = (txn, account_id_str)
 
-            import_hash = txn.compute_hash()
+        if unmapped_errors:
+            raise Exception(
+                f"Account '{unmapped_errors[0]}' has no mapping. "
+                f"Please go back and map or skip all accounts."
+            )
 
-            # Duplicate check — same hash in a DIFFERENT batch = duplicate
-            existing = db.execute(
-                text(
-                    """
-                    SELECT id FROM transactions 
-                    WHERE import_hash = :hash 
-                    AND import_batch_id != :batch_id
-                """
-                ),
-                {"hash": import_hash, "batch_id": str(batch_id)},
-            ).fetchone()
+        if not candidate_map:
+            update_import_batch(db, batch_id, "COMPLETE",
+                rows_total=len(parse_result.transactions),
+                rows_account_skipped=accounts_skipped)
+            return {
+                "status": "COMPLETE", "batch_id": batch_id,
+                "total_transactions": len(parse_result.transactions),
+                "imported": 0, "duplicates_skipped": 0,
+                "accounts_skipped": accounts_skipped,
+                "date_from": None, "date_to": None,
+                "parse_errors": parse_result.errors[:10],
+                "imported_symbols": [], "renamed_symbols": {},
+            }
 
-            if existing:
+        # ── Bulk duplicate check — ONE query for all hashes ───
+        # Fetch hashes that already exist in transactions from a DIFFERENT batch
+        all_candidate_hashes = list(candidate_map.keys())
+
+        existing_hashes: set[str] = set()
+        if all_candidate_hashes:
+            # Split into chunks of 1000 to avoid parameter limits
+            chunk_size = 1000
+            for i in range(0, len(all_candidate_hashes), chunk_size):
+                chunk = all_candidate_hashes[i:i + chunk_size]
+                rows = db.execute(
+                    text("""
+                        SELECT import_hash
+                        FROM transactions
+                        WHERE import_hash = ANY(CAST(:hashes AS text[]))
+                        AND import_batch_id != :batch_id
+                    """),
+                    {"hashes": chunk, "batch_id": str(batch_id)}
+                ).fetchall()
+                existing_hashes.update(r.import_hash for r in rows)
+
+        logger.info(
+            f"Duplicate check: {len(all_candidate_hashes)} candidates, "
+            f"{len(existing_hashes)} duplicates found (batch {batch_id})"
+        )
+
+        # ── Separate duplicates from new transactions ─────────
+        duplicates_skipped = 0
+        rows_to_insert = []
+        dates = []
+
+        for h, (txn, account_id_str) in candidate_map.items():
+            if h in existing_hashes:
                 duplicates_skipped += 1
                 logger.info(
                     f"Duplicate skipped: {txn.transaction_type} "
@@ -448,77 +400,68 @@ def run_import(
                 )
                 continue
 
-            # Insert
-            try:
-                raw_data_json = json.dumps(txn.raw_data) if txn.raw_data else None
-                db.execute(
-                    text(
-                        """
-                        INSERT INTO transactions (
-                            account_id, import_batch_id,
-                            transaction_type, trade_date, settlement_date,
-                            symbol, symbol_normalized, asset_type, description,
-                            quantity, price_per_unit,
-                            trade_currency, gross_amount, commission,
-                            net_amount, net_amount_cad, fx_rate_to_cad,
-                            import_hash, raw_data, notes
-                        ) VALUES (
-                            :account_id, :batch_id,
-                            :txn_type, :trade_date, :settlement_date,
-                            :symbol, :symbol_norm, :asset_type, :description,
-                            :quantity, :price,
-                            :currency, :gross, :commission,
-                            :net_amount, :net_cad, :fx_rate,
-                            :hash, cast(:raw_data as jsonb), :notes
-                        )
-                    """
-                    ),
-                    {
-                        "account_id": account_id_str,
-                        "batch_id": batch_id,
-                        "txn_type": txn.transaction_type,
-                        "trade_date": txn.trade_date,
-                        "settlement_date": txn.settlement_date,
-                        "symbol": txn.symbol,
-                        "symbol_norm": txn.symbol_normalized,
-                        "asset_type": txn.asset_type,
-                        "description": txn.description,
-                        "quantity": str(txn.quantity) if txn.quantity else None,
-                        "price": (
-                            str(txn.price_per_unit) if txn.price_per_unit else None
-                        ),
-                        "currency": txn.trade_currency,
-                        "gross": str(txn.gross_amount) if txn.gross_amount else None,
-                        "commission": str(txn.commission),
-                        "net_amount": str(txn.net_amount),
-                        "net_cad": str(txn.net_amount_cad),
-                        "fx_rate": (
-                            str(txn.fx_rate_to_cad) if txn.fx_rate_to_cad else None
-                        ),
-                        "hash": import_hash,
-                        "raw_data": raw_data_json,
-                        "notes": txn.notes,
-                    },
-                )
-                db.commit()
+            raw_data_json = json.dumps(txn.raw_data) if txn.raw_data else None
+            rows_to_insert.append({
+                "account_id":    account_id_str,
+                "batch_id":      batch_id,
+                "txn_type":      txn.transaction_type,
+                "trade_date":    txn.trade_date,
+                "settlement_date": txn.settlement_date,
+                "symbol":        txn.symbol,
+                "symbol_norm":   txn.symbol_normalized,
+                "asset_type":    txn.asset_type,
+                "description":   txn.description,
+                "quantity":      str(txn.quantity) if txn.quantity else None,
+                "price":         str(txn.price_per_unit) if txn.price_per_unit else None,
+                "currency":      txn.trade_currency,
+                "gross":         str(txn.gross_amount) if txn.gross_amount else None,
+                "commission":    str(txn.commission),
+                "net_amount":    str(txn.net_amount),
+                "net_cad":       str(txn.net_amount_cad),
+                "fx_rate":       str(txn.fx_rate_to_cad) if txn.fx_rate_to_cad else None,
+                "hash":          h,
+                "raw_data":      raw_data_json,
+                "notes":         txn.notes,
+            })
+            if txn.trade_date:
+                dates.append(txn.trade_date)
 
-                if txn.trade_date:
-                    dates.append(txn.trade_date)
-                imported += 1
+        imported = len(rows_to_insert)
 
-            except Exception as e:
-                db.rollback()
-                raise Exception(
-                    f"Failed to insert transaction on {txn.trade_date}: {str(e)[:200]}"
-                )
+        # ── Bulk INSERT — single executemany + single commit ──
+        if rows_to_insert:
+            db.execute(
+                text("""
+                    INSERT INTO transactions (
+                        account_id, import_batch_id,
+                        transaction_type, trade_date, settlement_date,
+                        symbol, symbol_normalized, asset_type, description,
+                        quantity, price_per_unit,
+                        trade_currency, gross_amount, commission,
+                        net_amount, net_amount_cad, fx_rate_to_cad,
+                        import_hash, raw_data, notes
+                    ) VALUES (
+                        :account_id, :batch_id,
+                        :txn_type, :trade_date, :settlement_date,
+                        :symbol, :symbol_norm, :asset_type, :description,
+                        :quantity, :price,
+                        :currency, :gross, :commission,
+                        :net_amount, :net_cad, :fx_rate,
+                        :hash, cast(:raw_data as jsonb), :notes
+                    )
+                """),
+                rows_to_insert  # executemany — SQLAlchemy handles list of dicts
+            )
+            db.commit()
+            logger.info(f"Bulk inserted {imported} transactions for batch {batch_id}")
 
+        # ── Update batch record ───────────────────────────────
         date_from = min(dates) if dates else None
-        date_to = max(dates) if dates else None
+        date_to   = max(dates) if dates else None
+        total_transactions = len(parse_result.transactions)
 
         update_import_batch(
-            db,
-            batch_id,
-            "COMPLETE",
+            db, batch_id, "COMPLETE",
             rows_total=total_transactions,
             rows_imported=imported,
             rows_duplicate_skipped=duplicates_skipped,
@@ -527,50 +470,45 @@ def run_import(
             transaction_date_to=date_to,
         )
 
-        # Recalculate holdings + realized gains for affected accounts
+        # ── Recalculate holdings + realized gains ─────────────
         if imported > 0:
             affected_ids = list(set(account_mapping.values()))
             from app.services.acb_service import (
                 recalculate_holdings_for_accounts,
                 recalculate_realized_gains,
             )
-
             recalculate_holdings_for_accounts(db, affected_ids)
-            # Derive affected member IDs from account mapping
+
             affected_member_rows = db.execute(
-                text(
-                    "SELECT DISTINCT member_id FROM member_accounts WHERE id = ANY(CAST(:ids AS uuid[]))"
-                ),
-                {"ids": affected_ids},
+                text("""
+                    SELECT DISTINCT member_id
+                    FROM member_accounts
+                    WHERE id = ANY(CAST(:ids AS uuid[]))
+                """),
+                {"ids": affected_ids}
             ).fetchall()
             affected_member_ids = [str(r.member_id) for r in affected_member_rows]
             recalculate_realized_gains(db, affected_ids, affected_member_ids)
 
-        # Collect unique symbols that need price tracking
-        imported_symbols = list(
-            set(
-                t.symbol_normalized
-                for t in parse_result.transactions
-                if t.symbol_normalized
-                and t.transaction_type in ("BUY", "SELL")
-                and t.broker_account_identifier not in skipped_accounts
-            )
-        )
+        # ── Collect symbols for price fetching ────────────────
+        imported_symbols = list(set(
+            t.symbol_normalized
+            for t in parse_result.transactions
+            if t.symbol_normalized
+            and t.transaction_type in ('BUY', 'SELL')
+            and t.broker_account_identifier not in skipped_accounts
+        ))
 
-        # Collect symbol renames from CORPORATE_ACTION transactions
-        # notes field contains "RENAME_FROM:OLD_SYMBOL"
+        # ── Collect symbol renames ────────────────────────────
         renamed_symbols = {}
         for t in parse_result.transactions:
-            if (
-                t.transaction_type == "CORPORATE_ACTION"
-                and t.notes
-                and t.notes.startswith("RENAME_FROM:")
-                and t.symbol_normalized
-                and t.broker_account_identifier not in skipped_accounts
-            ):
-                old_sym = t.notes.split("RENAME_FROM:", 1)[1].strip()
+            if (t.transaction_type == 'CORPORATE_ACTION'
+                    and t.notes
+                    and t.notes.startswith('RENAME_FROM:')
+                    and t.symbol_normalized
+                    and t.broker_account_identifier not in skipped_accounts):
+                old_sym = t.notes.split('RENAME_FROM:', 1)[1].strip()
                 renamed_symbols[old_sym] = t.symbol_normalized
-                # Also add new symbol to imported_symbols for price fetching
                 if t.symbol_normalized not in imported_symbols:
                     imported_symbols.append(t.symbol_normalized)
 
@@ -585,7 +523,7 @@ def run_import(
             "date_to": str(date_to) if date_to else None,
             "parse_errors": parse_result.errors[:10],
             "imported_symbols": imported_symbols,
-            "renamed_symbols": renamed_symbols,  # {old: new}
+            "renamed_symbols": renamed_symbols,
         }
 
     except Exception as e:

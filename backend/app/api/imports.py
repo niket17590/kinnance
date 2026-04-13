@@ -35,7 +35,6 @@ MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
 #    Scheduler handles actual price fetching in controlled batches
 # ============================================================
 
-
 def _post_import_task(symbols: list[str], renamed_symbols: dict = None):
     """
     Background task fired after a successful import.
@@ -48,14 +47,10 @@ def _post_import_task(symbols: list[str], renamed_symbols: dict = None):
     try:
         from app.services.price_service import ensure_securities_exist, push_to_queue
 
-        # Handle symbol renames — disable old, enable new
         if renamed_symbols:
             for old_sym, new_sym in renamed_symbols.items():
-                # Disable old symbol in security_master and price_cache
                 bg_db.execute(
-                    text(
-                        "UPDATE security_master SET is_active = FALSE, updated_at = NOW() WHERE symbol = :sym"
-                    ),
+                    text("UPDATE security_master SET is_active = FALSE, updated_at = NOW() WHERE symbol = :sym"),
                     {"sym": old_sym},
                 )
                 bg_db.execute(
@@ -65,9 +60,7 @@ def _post_import_task(symbols: list[str], renamed_symbols: dict = None):
                 bg_db.commit()
                 logger.info(f"Disabled old symbol {old_sym} → renamed to {new_sym}")
 
-        # Fetch company info for new symbols
         ensure_securities_exist(bg_db, symbols)
-        # Push to front of queue — scheduler fetches prices on next run
         push_to_queue(symbols, priority=True)
         logger.info(f"Post-import task complete for {len(symbols)} symbols")
     except Exception as e:
@@ -79,7 +72,6 @@ def _post_import_task(symbols: list[str], renamed_symbols: dict = None):
 # ============================================================
 # ROUTES
 # ============================================================
-
 
 @router.post("/parse")
 async def parse_file(
@@ -143,7 +135,7 @@ async def do_import(
 
     try:
         mappings = json.loads(confirmed_mappings)
-        skipped = json.loads(skipped_accounts)
+        skipped  = json.loads(skipped_accounts)
     except json.JSONDecodeError:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -157,7 +149,7 @@ async def do_import(
             detail="File too large — maximum 10MB",
         )
 
-    result = import_service.run_import(
+    result = import_service.import_transactions(
         db=db,
         owner_id=UUID(str(current_user.id)),
         broker_code=broker_code,
@@ -169,7 +161,7 @@ async def do_import(
 
     # Fire background task for new symbols
     imported_symbols = result.get("imported_symbols", [])
-    renamed_symbols = result.get("renamed_symbols", {})
+    renamed_symbols  = result.get("renamed_symbols", {})
     if (imported_symbols or renamed_symbols) and result.get("status") == "COMPLETE":
         background_tasks.add_task(_post_import_task, imported_symbols, renamed_symbols)
 
@@ -178,20 +170,19 @@ async def do_import(
 
 @router.get("/batches")
 def get_import_batches(
-    db: Session = Depends(get_db), current_user=Depends(get_current_db_user)
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_db_user),
 ):
     """Get all import batches for the current user."""
     result = db.execute(
-        text(
-            """
+        text("""
             SELECT ib.*, b.name as broker_name
             FROM import_batches ib
             JOIN brokers b ON ib.broker_code = b.code
             WHERE ib.owner_id = :owner_id
             ORDER BY ib.created_at DESC
             LIMIT 50
-        """
-        ),
+        """),
         {"owner_id": str(current_user.id)},
     ).fetchall()
     return [dict(r._mapping) for r in result]
@@ -203,7 +194,7 @@ def delete_import_batch(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_db_user),
 ):
-    """Delete an import batch and all its transactions, then recalculate holdings."""
+    """Delete an import batch and all its transactions, then recalculate holdings and realized gains."""
     batch = db.execute(
         text("SELECT id FROM import_batches WHERE id = :id AND owner_id = :owner_id"),
         {"id": batch_id, "owner_id": str(current_user.id)},
@@ -213,16 +204,12 @@ def delete_import_batch(
         raise HTTPException(status_code=404, detail="Import batch not found")
 
     affected = db.execute(
-        text(
-            "SELECT DISTINCT account_id FROM transactions WHERE import_batch_id = :id"
-        ),
+        text("SELECT DISTINCT account_id FROM transactions WHERE import_batch_id = :id"),
         {"id": batch_id},
     ).fetchall()
     affected_ids = [str(r.account_id) for r in affected]
 
-    db.execute(
-        text("DELETE FROM transactions WHERE import_batch_id = :id"), {"id": batch_id}
-    )
+    db.execute(text("DELETE FROM transactions WHERE import_batch_id = :id"), {"id": batch_id})
     db.execute(text("DELETE FROM import_batches WHERE id = :id"), {"id": batch_id})
     db.commit()
 
@@ -232,13 +219,13 @@ def delete_import_batch(
     )
 
     recalculate_holdings_for_accounts(db, affected_ids)
+
     affected_member_rows = db.execute(
-        text(
-            "SELECT DISTINCT member_id FROM member_accounts WHERE id = ANY(CAST(:ids AS uuid[]))"
-        ),
+        text("SELECT DISTINCT member_id FROM member_accounts WHERE id = ANY(CAST(:ids AS uuid[]))"),
         {"ids": affected_ids},
     ).fetchall()
     affected_member_ids = [str(r.member_id) for r in affected_member_rows]
+
     recalculate_realized_gains(db, affected_ids, affected_member_ids)
 
     return {"message": "Import batch deleted and holdings recalculated"}
