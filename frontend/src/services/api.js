@@ -95,4 +95,10 @@ export const transactionsApi = {
   getAll: (params = {}) => api.get('/transactions', { params })
 }
 
+// ── Capital Gains ─────────────────────────────────────────────
+export const capitalGainsApi = {
+  getTaxYears: (params = {}) => api.get('/capital-gains/tax-years', { params }),
+  get: (params = {}) => api.get('/capital-gains', { params }),
+}
+
 export default api

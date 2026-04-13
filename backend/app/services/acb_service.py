@@ -1,10 +1,12 @@
+import logging
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal
 
+logger = logging.getLogger(__name__)
 
 ZERO = Decimal('0')
-TINY = Decimal('0.00000001')  # threshold for zero quantity check
+TINY = Decimal('0.00000001')
 
 
 def recalculate_holdings_for_accounts(db: Session, account_ids: list[str]):
@@ -31,30 +33,20 @@ def recalculate_holdings(db: Session, account_id: str):
     - STOCK_SPLIT: adjusts quantity and ACB per share
     - Commission always included in ACB cost basis (CRA requirement)
     """
-    # Fetch all relevant transactions ordered by date ASC
     transactions = db.execute(
         text("""
             SELECT
-                id,
-                transaction_type,
-                trade_date,
-                symbol_normalized,
-                asset_type,
-                quantity,
-                price_per_unit,
-                net_amount,
-                net_amount_cad,
-                trade_currency,
-                commission,
-                fx_rate_to_cad,
-                description,
-                notes
+                id, transaction_type, trade_date,
+                symbol_normalized, asset_type,
+                quantity, price_per_unit,
+                net_amount, net_amount_cad,
+                trade_currency, commission,
+                fx_rate_to_cad, description, notes
             FROM transactions
             WHERE account_id = :account_id
             AND transaction_type IN (
                 'BUY', 'SELL', 'STOCK_SPLIT',
-                'RETURN_OF_CAPITAL',
-                'NORBERT_GAMBIT'
+                'RETURN_OF_CAPITAL', 'NORBERT_GAMBIT'
             )
             AND symbol_normalized IS NOT NULL
             AND quantity IS NOT NULL
@@ -63,43 +55,25 @@ def recalculate_holdings(db: Session, account_id: str):
         {'account_id': account_id}
     ).fetchall()
 
-    # holdings_calc[symbol] = {
-    #   qty, total_acb, acb_per_share,
-    #   currency, asset_type,
-    #   realized_gain_loss, total_proceeds, total_cost_sold,
-    #   is_open
-    # }
     holdings_calc = {}
 
     for txn in transactions:
         symbol = txn.symbol_normalized
         qty = Decimal(str(txn.quantity or 0))
-        commission = Decimal(str(txn.commission or 0))
         currency = txn.trade_currency or 'USD'
 
         if symbol not in holdings_calc:
             holdings_calc[symbol] = {
-                'qty': ZERO,
-                'total_acb': ZERO,
-                'acb_per_share': ZERO,
-                'currency': currency,
-                'asset_type': txn.asset_type or 'STOCK',
-                'realized_gain_loss': ZERO,
-                'total_proceeds': ZERO,
-                'total_cost_sold': ZERO,
-                'is_open': False
+                'qty': ZERO, 'total_acb': ZERO, 'acb_per_share': ZERO,
+                'currency': currency, 'asset_type': txn.asset_type or 'STOCK',
+                'realized_gain_loss': ZERO, 'total_proceeds': ZERO,
+                'total_cost_sold': ZERO, 'is_open': False
             }
 
         h = holdings_calc[symbol]
 
         if txn.transaction_type == 'BUY':
-            # Cost = absolute net amount + commission (both in trade currency)
-            # net_amount is negative for buys, so take abs
             cost = abs(Decimal(str(txn.net_amount or 0)))
-            # Commission is already included in net_amount from most brokers
-            # but we add it explicitly if it's tracked separately
-            # To avoid double-counting: use net_amount which already includes commission
-            # net_amount = -(quantity * price + commission) for buys
             h['qty'] += qty
             h['total_acb'] += cost
             if h['qty'] > TINY:
@@ -108,49 +82,35 @@ def recalculate_holdings(db: Session, account_id: str):
 
         elif txn.transaction_type == 'SELL':
             if h['qty'] > TINY:
-                # ACB per share does NOT change on sell
                 acb_per_share = h['acb_per_share']
                 sell_qty = min(abs(qty), h['qty'])
-
-                # Proceeds = net_amount (positive for sells, already nets commission)
                 proceeds = Decimal(str(txn.net_amount or 0))
                 cost_basis = acb_per_share * sell_qty
-
-                # Realized G/L for this sell
                 gain = proceeds - cost_basis
 
-                # Accumulate
                 h['realized_gain_loss'] += gain
                 h['total_proceeds'] += proceeds
                 h['total_cost_sold'] += cost_basis
-
-                # Reduce ACB and quantity
                 h['total_acb'] -= cost_basis
                 h['qty'] -= sell_qty
 
-                # Check if fully closed
                 if h['qty'] <= TINY:
                     h['qty'] = ZERO
                     h['total_acb'] = ZERO
                     h['is_open'] = False
-                    # acb_per_share kept as last known value for reference
 
         elif txn.transaction_type == 'RETURN_OF_CAPITAL':
-            # ROC reduces ACB — amount per share x current quantity
             if h['qty'] > TINY:
                 roc_total = abs(Decimal(str(txn.net_amount or 0)))
                 h['total_acb'] = max(ZERO, h['total_acb'] - roc_total)
                 h['acb_per_share'] = h['total_acb'] / h['qty']
 
         elif txn.transaction_type == 'STOCK_SPLIT':
-            # qty = new total quantity post-split
             if h['qty'] > TINY and qty > TINY:
                 h['qty'] = qty
                 h['acb_per_share'] = h['total_acb'] / h['qty']
 
         elif txn.transaction_type == 'NORBERT_GAMBIT':
-            # Treat as FX conversion — no stock position change
-            # Cash balances handled by recalculate_cash_balances
             pass
 
     # Get pledged quantities from open option contracts
@@ -167,13 +127,11 @@ def recalculate_holdings(db: Session, account_id: str):
     ).fetchall()
     pledged_map = {row.underlying_symbol: Decimal(str(row.pledged)) for row in pledged_rows}
 
-    # Upsert holdings — never delete rows
     for symbol, data in holdings_calc.items():
         qty = data['qty']
         total_acb = data['total_acb']
         acb_per_share = data['acb_per_share']
         is_open = data['is_open']
-
         qty_pledged = pledged_map.get(symbol, ZERO)
         qty_free = max(ZERO, qty - qty_pledged)
 
@@ -232,71 +190,47 @@ def recalculate_holdings(db: Session, account_id: str):
 def recalculate_cash_balances(db: Session, account_id: str):
     """
     Recalculate cash balances for an account from all transactions.
-
-    Transaction effects on cash:
-    - BUY:               net_amount (negative) → reduces cash in trade_currency
-    - SELL:              net_amount (positive) → increases cash in trade_currency
-    - DEPOSIT:           net_amount (positive) → increases cash
-    - WITHDRAWAL:        net_amount (negative) → reduces cash
-    - DIVIDEND:          net_amount (positive) → increases cash
-    - INTEREST:          net_amount (positive) → increases cash
-    - FEE:               net_amount (negative) → reduces cash
-    - FX_CONVERSION:     net_amount in trade_currency (one CAD row, one USD row)
-    - INTERNAL_TRANSFER: net_amount in trade_currency (moves between accounts)
-    - NORBERT_GAMBIT:    treat as FX_CONVERSION
-
-    STOCK_SPLIT, CORPORATE_ACTION → no cash effect
     """
-    cash_transactions = db.execute(
+    transactions = db.execute(
         text("""
-            SELECT
-                transaction_type,
-                trade_currency,
-                net_amount
+            SELECT transaction_type, net_amount_cad, trade_currency, net_amount
             FROM transactions
             WHERE account_id = :account_id
-            AND transaction_type NOT IN (
-                'STOCK_SPLIT', 'CORPORATE_ACTION', 'CRYPTO'
-            )
             ORDER BY trade_date ASC, created_at ASC
         """),
         {'account_id': account_id}
     ).fetchall()
 
-    # Accumulate balance per currency
     balances = {}
+    cash_locked_cad = ZERO
 
-    for txn in cash_transactions:
+    for txn in transactions:
         currency = txn.trade_currency or 'CAD'
-        amount = Decimal(str(txn.net_amount or 0))
+        amount_cad = Decimal(str(txn.net_amount_cad or 0))
+        amount_orig = Decimal(str(txn.net_amount or 0))
 
         if currency not in balances:
             balances[currency] = ZERO
 
-        balances[currency] += amount
+        txn_type = txn.transaction_type
 
-    # Get locked cash from open cash-secured puts
-    locked = db.execute(
-        text("""
-            SELECT COALESCE(SUM(cash_locked), 0) as locked
-            FROM option_contracts
-            WHERE account_id = :account_id
-            AND status = 'OPEN'
-            AND contract_type = 'PUT'
-        """),
-        {'account_id': account_id}
-    ).fetchone()
+        if txn_type in ('DEPOSIT', 'WITHDRAWAL', 'INTEREST', 'DIVIDEND',
+                        'FEE', 'INTERNAL_TRANSFER', 'RETURN_OF_CAPITAL'):
+            balances['CAD'] = balances.get('CAD', ZERO) + amount_cad
 
-    cash_locked_cad = Decimal(str(locked.locked or 0))
+        elif txn_type in ('BUY', 'SELL'):
+            if currency == 'CAD':
+                balances['CAD'] = balances.get('CAD', ZERO) + amount_cad
+            else:
+                balances[currency] = balances.get(currency, ZERO) + amount_orig
+                balances['CAD'] = balances.get('CAD', ZERO) + amount_cad
 
-    # Delete and reinsert
-    db.execute(
-        text("DELETE FROM cash_balances WHERE account_id = :account_id"),
-        {'account_id': account_id}
-    )
+        elif txn_type == 'FX_CONVERSION':
+            balances[currency] = balances.get(currency, ZERO) + amount_orig
+            balances['CAD'] = balances.get('CAD', ZERO) + amount_cad
 
     for currency, balance in balances.items():
-        if currency not in ('CAD', 'USD', 'GBP', 'EUR', 'INR'):
+        if currency in ('GBP', 'EUR', 'INR'):
             continue
 
         locked_amount = cash_locked_cad if currency == 'CAD' else ZERO
@@ -339,16 +273,14 @@ def update_unrealized_gains(db: Session):
         text("""
             UPDATE holdings h
             SET
-                current_price           = pc.price,
-                unrealized_gain_loss    = ROUND(
-                    (pc.price - h.acb_per_share) * h.quantity_total,
-                    2
+                current_price            = pc.price,
+                unrealized_gain_loss     = ROUND(
+                    (pc.price - h.acb_per_share) * h.quantity_total, 2
                 ),
                 unrealized_gain_loss_pct = CASE
                     WHEN h.total_acb > 0
                     THEN ROUND(
-                        ((pc.price * h.quantity_total - h.total_acb) / h.total_acb) * 100,
-                        4
+                        ((pc.price * h.quantity_total - h.total_acb) / h.total_acb) * 100, 4
                     )
                     ELSE NULL
                 END,
@@ -362,7 +294,6 @@ def update_unrealized_gains(db: Session):
         """)
     )
 
-    # Clear unrealized for symbols with no price
     db.execute(
         text("""
             UPDATE holdings h
@@ -381,3 +312,305 @@ def update_unrealized_gains(db: Session):
     )
 
     db.commit()
+
+
+# ============================================================
+# REALIZED GAINS CALCULATION
+# ============================================================
+
+def recalculate_realized_gains(
+    db: Session,
+    account_ids: list[str],
+    member_ids: list[str]
+):
+    """
+    Entry point — recalculate realized gains for affected accounts and members.
+    Called after recalculate_holdings_for_accounts on every import/delete.
+
+    Two passes:
+    1. Per account per sell → realized_gains (broker view)
+    2. Per member per symbol per year → realized_gains_consolidated (CPA view)
+    """
+    # Pass 1 — per account realized gains
+    for account_id in account_ids:
+        _recalculate_realized_gains_for_account(db, account_id)
+
+    # Pass 2 — consolidated per member
+    for member_id in member_ids:
+        _recalculate_consolidated_for_member(db, member_id)
+
+
+def _recalculate_realized_gains_for_account(db: Session, account_id: str):
+    """
+    Replay all BUY/SELL transactions for one account.
+    Records one row in realized_gains per SELL — capturing ACB at moment of sell.
+    Only processes TAXABLE accounts (CASH, MARGIN, CORP_CASH, CORP_MARGIN).
+    """
+    # Check account is taxable
+    account = db.execute(
+        text("""
+            SELECT ma.id, at.tax_category
+            FROM member_accounts ma
+            JOIN account_types at ON ma.account_type_code = at.code
+            WHERE ma.id = :account_id
+        """),
+        {'account_id': account_id}
+    ).fetchone()
+
+    if not account or account.tax_category != 'TAXABLE':
+        return  # Skip non-taxable accounts — no capital gains apply
+
+    # Delete and rebuild for this account
+    db.execute(
+        text("DELETE FROM realized_gains WHERE account_id = :account_id"),
+        {'account_id': account_id}
+    )
+
+    # Fetch all relevant transactions in date order
+    transactions = db.execute(
+        text("""
+            SELECT
+                id, transaction_type, trade_date,
+                symbol_normalized, quantity,
+                net_amount, trade_currency
+            FROM transactions
+            WHERE account_id = :account_id
+            AND transaction_type IN ('BUY', 'SELL', 'STOCK_SPLIT', 'RETURN_OF_CAPITAL')
+            AND symbol_normalized IS NOT NULL
+            AND quantity IS NOT NULL
+            ORDER BY trade_date ASC, created_at ASC
+        """),
+        {'account_id': account_id}
+    ).fetchall()
+
+    # Track running ACB state per symbol (same logic as recalculate_holdings)
+    acb_state: dict[str, dict] = {}
+    gains_to_insert = []
+
+    for txn in transactions:
+        symbol = txn.symbol_normalized
+        qty = Decimal(str(txn.quantity or 0))
+        currency = txn.trade_currency or 'CAD'
+
+        if symbol not in acb_state:
+            acb_state[symbol] = {
+                'qty': ZERO, 'total_acb': ZERO,
+                'acb_per_share': ZERO, 'currency': currency
+            }
+
+        s = acb_state[symbol]
+
+        if txn.transaction_type == 'BUY':
+            cost = abs(Decimal(str(txn.net_amount or 0)))
+            s['qty'] += qty
+            s['total_acb'] += cost
+            if s['qty'] > TINY:
+                s['acb_per_share'] = s['total_acb'] / s['qty']
+
+        elif txn.transaction_type == 'SELL':
+            if s['qty'] > TINY:
+                sell_qty = min(abs(qty), s['qty'])
+                acb_per_share = s['acb_per_share']
+                proceeds = Decimal(str(txn.net_amount or 0))
+                acb_total = acb_per_share * sell_qty
+                realized_gl = proceeds - acb_total
+
+                gains_to_insert.append({
+                    'account_id': account_id,
+                    'transaction_id': str(txn.id),
+                    'symbol': symbol,
+                    'trade_date': txn.trade_date,
+                    'tax_year': txn.trade_date.year,
+                    'quantity_sold': str(sell_qty),
+                    'proceeds': str(proceeds),
+                    'acb_per_share': str(acb_per_share),
+                    'acb_total': str(acb_total),
+                    'realized_gl': str(realized_gl),
+                    'currency': s['currency'],
+                })
+
+                s['total_acb'] -= acb_total
+                s['qty'] -= sell_qty
+                if s['qty'] <= TINY:
+                    s['qty'] = ZERO
+                    s['total_acb'] = ZERO
+
+        elif txn.transaction_type == 'RETURN_OF_CAPITAL':
+            if s['qty'] > TINY:
+                roc = abs(Decimal(str(txn.net_amount or 0)))
+                s['total_acb'] = max(ZERO, s['total_acb'] - roc)
+                s['acb_per_share'] = s['total_acb'] / s['qty']
+
+        elif txn.transaction_type == 'STOCK_SPLIT':
+            if s['qty'] > TINY and qty > TINY:
+                s['qty'] = qty
+                s['acb_per_share'] = s['total_acb'] / s['qty']
+
+    # Bulk insert
+    for g in gains_to_insert:
+        db.execute(
+            text("""
+                INSERT INTO realized_gains (
+                    account_id, transaction_id, symbol,
+                    trade_date, tax_year,
+                    quantity_sold, proceeds,
+                    acb_per_share, acb_total,
+                    realized_gl, currency
+                ) VALUES (
+                    :account_id, :transaction_id, :symbol,
+                    :trade_date, :tax_year,
+                    :quantity_sold, :proceeds,
+                    :acb_per_share, :acb_total,
+                    :realized_gl, :currency
+                )
+            """),
+            g
+        )
+
+    db.commit()
+    logger.info(f"Realized gains: {len(gains_to_insert)} sell events recorded for account {account_id}")
+
+
+def _recalculate_consolidated_for_member(db: Session, member_id: str):
+    """
+    CPA consolidated view — cross-broker weighted average ACB per member per symbol.
+
+    Replays ALL BUY/SELL across ALL taxable accounts for this member
+    in chronological order, tracking true cross-broker ACB per symbol.
+    Aggregates results by tax_year + symbol.
+    """
+    # Delete existing consolidated rows for this member
+    db.execute(
+        text("DELETE FROM realized_gains_consolidated WHERE member_id = :member_id"),
+        {'member_id': member_id}
+    )
+
+    # Fetch ALL BUY/SELL/SPLIT/ROC across all taxable accounts for this member
+    # Ordered chronologically — this is what CPA does
+    transactions = db.execute(
+        text("""
+            SELECT
+                t.id, t.transaction_type, t.trade_date,
+                t.symbol_normalized, t.quantity,
+                t.net_amount, t.trade_currency,
+                ma.id as account_id
+            FROM transactions t
+            JOIN member_accounts ma ON t.account_id = ma.id
+            JOIN account_types at ON ma.account_type_code = at.code
+            WHERE ma.member_id = :member_id
+            AND at.tax_category = 'TAXABLE'
+            AND t.transaction_type IN ('BUY', 'SELL', 'STOCK_SPLIT', 'RETURN_OF_CAPITAL')
+            AND t.symbol_normalized IS NOT NULL
+            AND t.quantity IS NOT NULL
+            ORDER BY t.trade_date ASC, t.created_at ASC
+        """),
+        {'member_id': member_id}
+    ).fetchall()
+
+    # Track cross-broker ACB per symbol
+    acb_state: dict[str, dict] = {}
+
+    # Collect realized events: (tax_year, symbol) → aggregated data
+    consolidated: dict[tuple, dict] = {}
+
+    for txn in transactions:
+        symbol = txn.symbol_normalized
+        qty = Decimal(str(txn.quantity or 0))
+        currency = txn.trade_currency or 'CAD'
+
+        if symbol not in acb_state:
+            acb_state[symbol] = {
+                'qty': ZERO, 'total_acb': ZERO,
+                'acb_per_share': ZERO, 'currency': currency
+            }
+
+        s = acb_state[symbol]
+
+        if txn.transaction_type == 'BUY':
+            cost = abs(Decimal(str(txn.net_amount or 0)))
+            s['qty'] += qty
+            s['total_acb'] += cost
+            if s['qty'] > TINY:
+                s['acb_per_share'] = s['total_acb'] / s['qty']
+
+        elif txn.transaction_type == 'SELL':
+            if s['qty'] > TINY:
+                sell_qty = min(abs(qty), s['qty'])
+                acb_per_share = s['acb_per_share']
+                proceeds = Decimal(str(txn.net_amount or 0))
+                acb_total = acb_per_share * sell_qty
+                realized_gl = proceeds - acb_total
+
+                key = (txn.trade_date.year, symbol)
+                if key not in consolidated:
+                    consolidated[key] = {
+                        'tax_year': txn.trade_date.year,
+                        'symbol': symbol,
+                        'currency': s['currency'],
+                        'total_quantity_sold': ZERO,
+                        'total_proceeds': ZERO,
+                        'total_acb': ZERO,
+                        'total_realized_gl': ZERO,
+                        'sell_count': 0,
+                    }
+
+                c = consolidated[key]
+                c['total_quantity_sold'] += sell_qty
+                c['total_proceeds'] += proceeds
+                c['total_acb'] += acb_total
+                c['total_realized_gl'] += realized_gl
+                c['sell_count'] += 1
+
+                s['total_acb'] -= acb_total
+                s['qty'] -= sell_qty
+                if s['qty'] <= TINY:
+                    s['qty'] = ZERO
+                    s['total_acb'] = ZERO
+
+        elif txn.transaction_type == 'RETURN_OF_CAPITAL':
+            if s['qty'] > TINY:
+                roc = abs(Decimal(str(txn.net_amount or 0)))
+                s['total_acb'] = max(ZERO, s['total_acb'] - roc)
+                s['acb_per_share'] = s['total_acb'] / s['qty']
+
+        elif txn.transaction_type == 'STOCK_SPLIT':
+            if s['qty'] > TINY and qty > TINY:
+                s['qty'] = qty
+                s['acb_per_share'] = s['total_acb'] / s['qty']
+
+    # Upsert consolidated rows
+    for (tax_year, symbol), c in consolidated.items():
+        db.execute(
+            text("""
+                INSERT INTO realized_gains_consolidated (
+                    member_id, tax_year, symbol, currency,
+                    total_quantity_sold, total_proceeds,
+                    total_acb, total_realized_gl, sell_count
+                ) VALUES (
+                    :member_id, :tax_year, :symbol, :currency,
+                    :total_qty, :total_proceeds,
+                    :total_acb, :total_gl, :sell_count
+                )
+                ON CONFLICT (member_id, tax_year, symbol) DO UPDATE SET
+                    total_quantity_sold = EXCLUDED.total_quantity_sold,
+                    total_proceeds      = EXCLUDED.total_proceeds,
+                    total_acb           = EXCLUDED.total_acb,
+                    total_realized_gl   = EXCLUDED.total_realized_gl,
+                    sell_count          = EXCLUDED.sell_count,
+                    updated_at          = NOW()
+            """),
+            {
+                'member_id': member_id,
+                'tax_year': c['tax_year'],
+                'symbol': c['symbol'],
+                'currency': c['currency'],
+                'total_qty': str(c['total_quantity_sold']),
+                'total_proceeds': str(c['total_proceeds']),
+                'total_acb': str(c['total_acb']),
+                'total_gl': str(c['total_realized_gl']),
+                'sell_count': c['sell_count'],
+            }
+        )
+
+    db.commit()
+    logger.info(f"Consolidated realized gains: {len(consolidated)} symbol-year records for member {member_id}")

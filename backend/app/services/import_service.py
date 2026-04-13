@@ -9,6 +9,7 @@ from app.parsers.base_parser import ParseResult
 from app.parsers.wealthsimple_parser import WealthSimpleParser
 from app.parsers.questrade_parser import QuestradeParser
 from app.parsers.ibkr_parser import IBKRParser
+
 logger = logging.getLogger(__name__)
 
 # ============================================================
@@ -284,15 +285,15 @@ def parse_and_match(
     if unmatched:
         available = get_available_accounts(db, owner_id, broker_code, member_id)
         return {
-            'status': 'NEEDS_MAPPING',
-            'unmatched_accounts': unmatched,
-            'already_mapped_accounts': already_mapped,
-            'available_accounts': available,
-            'account_number_suggestions': account_number_suggestions,
-            'total_transactions': total,
-            'date_from': date_from,
-            'date_to': date_to,
-            'parse_errors': parse_result.errors[:10]
+            "status": "NEEDS_MAPPING",
+            "unmatched_accounts": unmatched,
+            "already_mapped_accounts": already_mapped,
+            "available_accounts": available,
+            "account_number_suggestions": account_number_suggestions,
+            "total_transactions": total,
+            "date_from": date_from,
+            "date_to": date_to,
+            "parse_errors": parse_result.errors[:10],
         }
 
     return {
@@ -356,13 +357,18 @@ def run_import(
         # This normalizes WealthSimple bare tickers to exchange-suffixed form
         # Uses symbol_aliases table first, then Twelve Data symbol_search as fallback
         from app.services.price_service import resolve_canonical_symbol, _is_canadian
+
         for txn in parse_result.transactions:
-            if (txn.symbol_normalized
-                    and txn.trade_currency == 'CAD'
-                    and not _is_canadian(txn.symbol_normalized)):
-                canonical = resolve_canonical_symbol(db, txn.symbol_normalized, 'CAD')
+            if (
+                txn.symbol_normalized
+                and txn.trade_currency == "CAD"
+                and not _is_canadian(txn.symbol_normalized)
+            ):
+                canonical = resolve_canonical_symbol(db, txn.symbol_normalized, "CAD")
                 if canonical != txn.symbol_normalized:
-                    logger.info(f"Symbol resolved: {txn.symbol_normalized} → {canonical}")
+                    logger.info(
+                        f"Symbol resolved: {txn.symbol_normalized} → {canonical}"
+                    )
                     txn.symbol_normalized = canonical
 
         # Build account mapping from:
@@ -419,14 +425,15 @@ def run_import(
 
             # Duplicate check — same hash in a DIFFERENT batch = duplicate
             existing = db.execute(
-                text("""
+                text(
+                    """
                     SELECT id FROM transactions 
                     WHERE import_hash = :hash 
                     AND import_batch_id != :batch_id
-                """),
+                """
+                ),
                 {"hash": import_hash, "batch_id": str(batch_id)},
             ).fetchone()
-            
 
             if existing:
                 duplicates_skipped += 1
@@ -520,31 +527,48 @@ def run_import(
             transaction_date_to=date_to,
         )
 
-        # Recalculate holdings for affected accounts
+        # Recalculate holdings + realized gains for affected accounts
         if imported > 0:
             affected_ids = list(set(account_mapping.values()))
-            from app.services.acb_service import recalculate_holdings_for_accounts
+            from app.services.acb_service import (
+                recalculate_holdings_for_accounts,
+                recalculate_realized_gains,
+            )
+
             recalculate_holdings_for_accounts(db, affected_ids)
+            # Derive affected member IDs from account mapping
+            affected_member_rows = db.execute(
+                text(
+                    "SELECT DISTINCT member_id FROM member_accounts WHERE id = ANY(CAST(:ids AS uuid[]))"
+                ),
+                {"ids": affected_ids},
+            ).fetchall()
+            affected_member_ids = [str(r.member_id) for r in affected_member_rows]
+            recalculate_realized_gains(db, affected_ids, affected_member_ids)
 
         # Collect unique symbols that need price tracking
-        imported_symbols = list(set(
-            t.symbol_normalized
-            for t in parse_result.transactions
-            if t.symbol_normalized
-            and t.transaction_type in ('BUY', 'SELL')
-            and t.broker_account_identifier not in skipped_accounts
-        ))
+        imported_symbols = list(
+            set(
+                t.symbol_normalized
+                for t in parse_result.transactions
+                if t.symbol_normalized
+                and t.transaction_type in ("BUY", "SELL")
+                and t.broker_account_identifier not in skipped_accounts
+            )
+        )
 
         # Collect symbol renames from CORPORATE_ACTION transactions
         # notes field contains "RENAME_FROM:OLD_SYMBOL"
         renamed_symbols = {}
         for t in parse_result.transactions:
-            if (t.transaction_type == 'CORPORATE_ACTION'
-                    and t.notes
-                    and t.notes.startswith('RENAME_FROM:')
-                    and t.symbol_normalized
-                    and t.broker_account_identifier not in skipped_accounts):
-                old_sym = t.notes.split('RENAME_FROM:', 1)[1].strip()
+            if (
+                t.transaction_type == "CORPORATE_ACTION"
+                and t.notes
+                and t.notes.startswith("RENAME_FROM:")
+                and t.symbol_normalized
+                and t.broker_account_identifier not in skipped_accounts
+            ):
+                old_sym = t.notes.split("RENAME_FROM:", 1)[1].strip()
                 renamed_symbols[old_sym] = t.symbol_normalized
                 # Also add new symbol to imported_symbols for price fetching
                 if t.symbol_normalized not in imported_symbols:

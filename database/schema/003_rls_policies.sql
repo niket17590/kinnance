@@ -690,3 +690,77 @@ CREATE POLICY app_settings_modify_super_admin
 -- ============================================================
 -- MORE RLS POLICIES ADDED HERE IN PHASE 3
 -- ============================================================
+
+
+ALTER TABLE realized_gains ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY realized_gains_select_own
+    ON realized_gains FOR SELECT
+    USING (
+        account_id IN (
+            SELECT ma.id FROM member_accounts ma
+            JOIN members m ON ma.member_id = m.id
+            WHERE m.owner_id = (SELECT id FROM users WHERE auth_user_id = auth.uid())
+        )
+    );
+
+CREATE POLICY realized_gains_insert_own
+    ON realized_gains FOR INSERT
+    WITH CHECK (
+        account_id IN (
+            SELECT ma.id FROM member_accounts ma
+            JOIN members m ON ma.member_id = m.id
+            WHERE m.owner_id = (SELECT id FROM users WHERE auth_user_id = auth.uid())
+        )
+    );
+
+CREATE POLICY realized_gains_delete_own
+    ON realized_gains FOR DELETE
+    USING (
+        account_id IN (
+            SELECT ma.id FROM member_accounts ma
+            JOIN members m ON ma.member_id = m.id
+            WHERE m.owner_id = (SELECT id FROM users WHERE auth_user_id = auth.uid())
+        )
+    );
+
+CREATE POLICY realized_gains_super_admin
+    ON realized_gains FOR ALL
+    USING (
+        EXISTS (SELECT 1 FROM users WHERE auth_user_id = auth.uid() AND is_super_admin = TRUE)
+    );
+
+ALTER TABLE realized_gains_consolidated ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY rgc_select_own
+    ON realized_gains_consolidated FOR SELECT
+    USING (
+        member_id IN (
+            SELECT id FROM members
+            WHERE owner_id = (SELECT id FROM users WHERE auth_user_id = auth.uid())
+        )
+    );
+
+CREATE POLICY rgc_insert_own
+    ON realized_gains_consolidated FOR INSERT
+    WITH CHECK (
+        member_id IN (
+            SELECT id FROM members
+            WHERE owner_id = (SELECT id FROM users WHERE auth_user_id = auth.uid())
+        )
+    );
+
+CREATE POLICY rgc_delete_own
+    ON realized_gains_consolidated FOR DELETE
+    USING (
+        member_id IN (
+            SELECT id FROM members
+            WHERE owner_id = (SELECT id FROM users WHERE auth_user_id = auth.uid())
+        )
+    );
+
+CREATE POLICY rgc_super_admin
+    ON realized_gains_consolidated FOR ALL
+    USING (
+        EXISTS (SELECT 1 FROM users WHERE auth_user_id = auth.uid() AND is_super_admin = TRUE)
+    );

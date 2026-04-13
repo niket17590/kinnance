@@ -893,3 +893,77 @@ CREATE TABLE symbol_aliases (
 );
 
 ALTER TABLE transactions DROP CONSTRAINT transactions_import_hash_key;
+
+
+
+
+
+-- ============================================================
+-- 1. REALIZED GAINS — per account per SELL transaction
+--    Source of truth for broker reconciliation view.
+--    Populated by acb_service on every import / recalculation.
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS realized_gains (
+    id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    account_id          UUID NOT NULL REFERENCES member_accounts(id) ON DELETE CASCADE,
+    transaction_id      UUID REFERENCES transactions(id) ON DELETE SET NULL,
+    symbol              TEXT NOT NULL,
+    trade_date          DATE NOT NULL,
+    tax_year            INTEGER NOT NULL,
+    quantity_sold       NUMERIC(18,8) NOT NULL,
+    proceeds            NUMERIC(18,2) NOT NULL,   -- net_amount of SELL (after commission)
+    acb_per_share       NUMERIC(18,6) NOT NULL,   -- per-account ACB at time of sell
+    acb_total           NUMERIC(18,2) NOT NULL,   -- acb_per_share × quantity_sold
+    realized_gl         NUMERIC(18,2) NOT NULL,   -- proceeds − acb_total
+    currency            TEXT NOT NULL DEFAULT 'CAD',
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_realized_gains_account_id
+    ON realized_gains(account_id);
+
+CREATE INDEX IF NOT EXISTS idx_realized_gains_tax_year
+    ON realized_gains(tax_year);
+
+CREATE INDEX IF NOT EXISTS idx_realized_gains_symbol
+    ON realized_gains(symbol);
+
+CREATE INDEX IF NOT EXISTS idx_realized_gains_account_year
+    ON realized_gains(account_id, tax_year);
+
+COMMENT ON TABLE realized_gains IS 'One row per SELL transaction — per-account ACB for broker reconciliation view';
+COMMENT ON COLUMN realized_gains.acb_per_share IS 'Per-account weighted average ACB at moment of sell — matches broker T5008';
+COMMENT ON COLUMN realized_gains.proceeds IS 'Net proceeds after commission — same as transactions.net_amount for SELL';
+
+-- ============================================================
+-- 2. REALIZED GAINS CONSOLIDATED — per member per symbol per tax year
+--    CPA view — cross-broker weighted average ACB per person.
+--    Populated by acb_service after per-account calculation.
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS realized_gains_consolidated (
+    id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    member_id           UUID NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+    tax_year            INTEGER NOT NULL,
+    symbol              TEXT NOT NULL,
+    currency            TEXT NOT NULL DEFAULT 'CAD',
+    total_quantity_sold NUMERIC(18,8) NOT NULL,
+    total_proceeds      NUMERIC(18,2) NOT NULL,
+    total_acb           NUMERIC(18,2) NOT NULL,   -- true cross-broker weighted avg ACB
+    total_realized_gl   NUMERIC(18,2) NOT NULL,
+    sell_count          INTEGER NOT NULL DEFAULT 1, -- number of SELL transactions
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_realized_gains_consolidated
+        UNIQUE (member_id, tax_year, symbol)
+);
+
+CREATE INDEX IF NOT EXISTS idx_rgc_member_year
+    ON realized_gains_consolidated(member_id, tax_year);
+
+CREATE INDEX IF NOT EXISTS idx_rgc_symbol
+    ON realized_gains_consolidated(symbol);
+
+COMMENT ON TABLE realized_gains_consolidated IS 'CPA view — cross-broker ACB per member per symbol per year for Schedule 3';
+COMMENT ON COLUMN realized_gains_consolidated.total_acb IS 'True cross-broker weighted average ACB — differs from broker reports when same stock held at multiple brokers';
