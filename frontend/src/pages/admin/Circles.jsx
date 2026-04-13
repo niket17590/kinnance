@@ -1,11 +1,36 @@
-import { useState, useEffect } from "react";
-import {
-  circlesApi,
-  memberAccountsApi,
-  membersApi,
-  referenceApi,
-} from "../../services/api";
+import { useState, useEffect, useCallback } from "react";
+import { circlesApi, memberAccountsApi, membersApi, referenceApi } from "../../services/api";
 import { useFilters } from "../../context/FilterContext";
+
+// ── Constants ─────────────────────────────────────────────────
+
+const TAX_COLORS = {
+  TAX_FREE:     { bg: "#DCFCE7", color: "#14532D" },
+  TAX_DEFERRED: { bg: "#DBEAFE", color: "#1D4ED8" },
+  TAXABLE:      { bg: "#FEF3C7", color: "#92400E" },
+  CORP_TAXABLE: { bg: "#F3E8FF", color: "#6D28D9" },
+};
+const TAX_LABELS = {
+  TAX_FREE: "Tax free", TAX_DEFERRED: "Tax deferred",
+  TAXABLE: "Taxable", CORP_TAXABLE: "Corp",
+};
+const REGION_LABELS = { CA: "Canada", US: "United States", IN: "India" };
+
+const accountLabel = (a) => a.nickname || `${a.account_type_code} · ${a.broker_code}`;
+const taxBadge = (tax_category) => {
+  const tc = TAX_COLORS[tax_category] || { bg: "#F3F4F6", color: "#374151" };
+  return { style: tc, label: TAX_LABELS[tax_category] || tax_category };
+};
+
+// Group an array of accounts by member_id
+const groupByMember = (accounts) =>
+  accounts.reduce((acc, a) => {
+    if (!acc[a.member_id]) acc[a.member_id] = { member_name: a.member_name, accounts: [] };
+    acc[a.member_id].accounts.push(a);
+    return acc;
+  }, {});
+
+// ── Circle create / edit modal ────────────────────────────────
 
 function CircleModal({ circle, onSave, onClose }) {
   const [regions, setRegions] = useState([]);
@@ -18,38 +43,18 @@ function CircleModal({ circle, onSave, onClose }) {
   const [error, setError] = useState("");
 
   useEffect(() => {
-    const fetchRegions = async () => {
-      try {
-        const res = await referenceApi.getRegions();
-        setRegions(res.data);
-      } catch {
-        setError("Failed to load countries");
-      }
-    };
-    fetchRegions();
+    referenceApi.getRegions().then(r => setRegions(r.data)).catch(() => {});
   }, []);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!form.name.trim()) {
-      setError("Circle name is required");
-      return;
-    }
-    if (!form.region_code) {
-      setError("Country is required");
-      return;
-    }
+    if (!form.name.trim()) { setError("Circle name is required"); return; }
+    if (!form.region_code) { setError("Country is required"); return; }
     try {
-      setLoading(true);
-      setError("");
-      if (circle) {
-        await circlesApi.update(circle.id, {
-          name: form.name,
-          description: form.description,
-        });
-      } else {
-        await circlesApi.create(form);
-      }
+      setLoading(true); setError("");
+      circle
+        ? await circlesApi.update(circle.id, { name: form.name, description: form.description })
+        : await circlesApi.create(form);
       onSave();
     } catch (err) {
       setError(err.response?.data?.detail || "Something went wrong");
@@ -57,180 +62,65 @@ function CircleModal({ circle, onSave, onClose }) {
     }
   };
 
-  const inputStyle = {
-    width: "100%",
-    padding: "10px 12px",
-    borderRadius: "8px",
-    border: "1.5px solid var(--card-border)",
-    background: "white",
-    fontSize: "13px",
-    color: "var(--text-primary)",
-    outline: "none",
-  };
-
-  const labelStyle = {
-    display: "block",
-    fontSize: "12px",
-    fontWeight: "600",
-    color: "var(--text-primary)",
-    marginBottom: "6px",
+  const inp = {
+    width: "100%", padding: "10px 12px", borderRadius: "8px",
+    border: "1.5px solid var(--card-border)", background: "white",
+    fontSize: "13px", color: "var(--text-primary)", outline: "none",
+    boxSizing: "border-box",
   };
 
   return (
-    <div
-      style={{
-        position: "fixed",
-        inset: 0,
-        zIndex: 100,
-        background: "rgba(0,0,0,0.4)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        padding: "20px",
-      }}
-    >
-      <div
-        style={{
-          background: "var(--card-bg)",
-          border: "1px solid var(--card-border)",
-          borderRadius: "16px",
-          padding: "28px",
-          width: "100%",
-          maxWidth: "440px",
-        }}
-      >
-        <h2
-          style={{
-            fontSize: "16px",
-            fontWeight: "700",
-            color: "var(--text-primary)",
-            marginBottom: "20px",
-          }}
-        >
+    <div style={{ position: "fixed", inset: 0, zIndex: 100, background: "rgba(0,0,0,0.4)",
+      display: "flex", alignItems: "center", justifyContent: "center", padding: "20px" }}>
+      <div style={{ background: "var(--card-bg)", border: "1px solid var(--card-border)",
+        borderRadius: "16px", padding: "28px", width: "100%", maxWidth: "440px" }}>
+        <h2 style={{ fontSize: "16px", fontWeight: "700", color: "var(--text-primary)", marginBottom: "20px" }}>
           {circle ? "Edit circle" : "Create circle"}
         </h2>
-
         {error && (
-          <div
-            style={{
-              background: "#FEE2E2",
-              border: "1px solid #FECACA",
-              borderRadius: "8px",
-              padding: "10px 14px",
-              marginBottom: "16px",
-              fontSize: "13px",
-              color: "#DC2626",
-            }}
-          >
+          <div style={{ background: "#FEE2E2", border: "1px solid #FECACA", borderRadius: "8px",
+            padding: "10px 14px", marginBottom: "16px", fontSize: "13px", color: "#DC2626" }}>
             {error}
           </div>
         )}
-
-        <form onSubmit={handleSubmit}>
-          <div style={{ marginBottom: "14px" }}>
-            <label style={labelStyle}>Circle name</label>
-            <input
-              type="text"
-              value={form.name}
-              onChange={(e) => setForm({ ...form, name: e.target.value })}
-              placeholder="e.g. Sharma Family"
-              style={inputStyle}
-            />
-          </div>
-
-          <div style={{ marginBottom: "14px" }}>
-            <label style={labelStyle}>Country</label>
-            <select
-              value={form.region_code}
-              onChange={(e) =>
-                setForm({ ...form, region_code: e.target.value })
-              }
-              disabled={!!circle}
-              style={{
-                ...inputStyle,
-                background: circle ? "#f5f5f5" : "white",
-                cursor: circle ? "not-allowed" : "pointer",
-              }}
-            >
-              <option value="">Select a country</option>
-              {regions.map((r) => (
-                <option key={r.code} value={r.code}>
-                  {r.name}
-                </option>
-              ))}
+        <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+          <div>
+            <label style={{ display: "block", fontSize: "12px", fontWeight: "600",
+              color: "var(--text-primary)", marginBottom: "6px" }}>Country</label>
+            <select value={form.region_code}
+              onChange={e => setForm(f => ({ ...f, region_code: e.target.value }))}
+              disabled={!!circle} style={inp}>
+              <option value="">Select country</option>
+              {regions.map(r => <option key={r.code} value={r.code}>{r.name}</option>)}
             </select>
-            {circle && (
-              <p
-                style={{
-                  fontSize: "11px",
-                  color: "var(--text-secondary)",
-                  marginTop: "4px",
-                }}
-              >
-                Country cannot be changed after creation
-              </p>
-            )}
           </div>
-
-          <div style={{ marginBottom: "24px" }}>
-            <label style={labelStyle}>
-              Description{" "}
-              <span
-                style={{ color: "var(--text-secondary)", fontWeight: "400" }}
-              >
-                (optional)
-              </span>
+          <div>
+            <label style={{ display: "block", fontSize: "12px", fontWeight: "600",
+              color: "var(--text-primary)", marginBottom: "6px" }}>Circle name</label>
+            <input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
+              placeholder="e.g. Sharma Family" style={inp} />
+          </div>
+          <div>
+            <label style={{ display: "block", fontSize: "12px", fontWeight: "600",
+              color: "var(--text-primary)", marginBottom: "6px" }}>
+              Description <span style={{ fontWeight: 400, color: "var(--text-secondary)" }}>(optional)</span>
             </label>
-            <input
-              type="text"
-              value={form.description}
-              onChange={(e) =>
-                setForm({ ...form, description: e.target.value })
-              }
-              placeholder="e.g. Our family investment portfolio"
-              style={inputStyle}
-            />
+            <input value={form.description}
+              onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
+              placeholder="Our family investment portfolio" style={inp} />
           </div>
-
           <div style={{ display: "flex", gap: "10px" }}>
-            <button
-              type="button"
-              onClick={onClose}
-              style={{
-                flex: 1,
-                padding: "10px",
-                borderRadius: "8px",
-                border: "1.5px solid var(--card-border)",
-                background: "white",
-                color: "var(--text-primary)",
-                fontSize: "13px",
-                fontWeight: "600",
-                cursor: "pointer",
-              }}
-            >
+            <button type="button" onClick={onClose}
+              style={{ flex: 1, padding: "10px", borderRadius: "8px",
+                border: "1.5px solid var(--card-border)", background: "white",
+                color: "var(--text-primary)", fontSize: "13px", fontWeight: "600", cursor: "pointer" }}>
               Cancel
             </button>
-            <button
-              type="submit"
-              disabled={loading}
-              style={{
-                flex: 1,
-                padding: "10px",
-                borderRadius: "8px",
-                border: "none",
-                background: "var(--sidebar-bg)",
-                color: "white",
-                fontSize: "13px",
-                fontWeight: "600",
-                cursor: loading ? "not-allowed" : "pointer",
-                opacity: loading ? 0.7 : 1,
-              }}
-            >
-              {loading
-                ? "Saving..."
-                : circle
-                  ? "Save changes"
-                  : "Create circle"}
+            <button type="submit" disabled={loading}
+              style={{ flex: 1, padding: "10px", borderRadius: "8px", border: "none",
+                background: "var(--sidebar-bg)", color: "white", fontSize: "13px", fontWeight: "600",
+                cursor: loading ? "not-allowed" : "pointer", opacity: loading ? 0.7 : 1 }}>
+              {loading ? "Saving..." : circle ? "Save changes" : "Create circle"}
             </button>
           </div>
         </form>
@@ -239,747 +129,355 @@ function CircleModal({ circle, onSave, onClose }) {
   );
 }
 
-function AddAccountsModal({ circle, onClose, onUpdate }) {
-  const [circleAccounts, setCircleAccounts] = useState([]);
-  const [availableAccounts, setAvailableAccounts] = useState([]);
-  const [members, setMembers] = useState([]);
+// ── Manage accounts modal ─────────────────────────────────────
+// Loads all accounts for the circle's region once on open.
+// Pre-checks already-tagged accounts. Sends one bulk request on Save.
+
+function ManageAccountsModal({ circle, onClose, onSaved }) {
+  const [allAccounts, setAllAccounts] = useState([]);
+  const [checkedIds, setCheckedIds] = useState(new Set());
+  const [initialIds, setInitialIds] = useState(new Set());
   const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
-  const fetchData = async () => {
-    try {
-      setLoading(true);
-      const [circleAccRes, allAccRes, membersRes] = await Promise.all([
-        circlesApi.getAccounts(circle.id),
-        memberAccountsApi.getAll(),
-        membersApi.getAll(),
-      ]);
-      setCircleAccounts(circleAccRes.data);
-      setMembers(membersRes.data);
-      const circleAccountIds = circleAccRes.data.map((a) => a.id);
-      setAvailableAccounts(
-        allAccRes.data.filter(
-          (a) =>
-            a.region_code === circle.region_code &&
-            !circleAccountIds.includes(a.id),
-        ),
-      );
-    } catch {
-      setError("Failed to load accounts");
-    } finally {
-      setLoading(false);
-    }
-  };
-
   useEffect(() => {
-    fetchData();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    const load = async () => {
+      try {
+        // Parallel fetch — all region accounts + already-tagged accounts + members for names
+        const [allAccRes, circleAccRes, membersRes] = await Promise.all([
+          memberAccountsApi.getAll(),
+          circlesApi.getAccounts(circle.id),
+          membersApi.getAll(),
+        ]);
 
-  const getMemberName = (memberId) =>
-    members.find((m) => m.id === memberId)?.display_name || "";
+        const memberMap = Object.fromEntries(membersRes.data.map(m => [m.id, m.display_name]));
 
-  const handleAdd = async (accountId) => {
+        const regionAccounts = allAccRes.data
+          .filter(a => a.region_code === circle.region_code && a.is_active)
+          .map(a => ({ ...a, member_name: memberMap[a.member_id] || "Unknown" }))
+          .sort((a, b) =>
+            a.member_name.localeCompare(b.member_name) ||
+            a.account_type_code.localeCompare(b.account_type_code)
+          );
+
+        const tagged = new Set(circleAccRes.data.map(a => a.id));
+        setAllAccounts(regionAccounts);
+        setCheckedIds(new Set(tagged));
+        setInitialIds(new Set(tagged));
+      } catch {
+        setError("Failed to load accounts");
+      } finally {
+        setLoading(false);
+      }
+    };
+    load();
+  }, [circle.id, circle.region_code]);
+
+  const toggle = (id) =>
+    setCheckedIds(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+
+  const toggleMember = (memberAccounts) => {
+    const ids = memberAccounts.map(a => a.id);
+    const allChecked = ids.every(id => checkedIds.has(id));
+    setCheckedIds(prev => {
+      const next = new Set(prev);
+      ids.forEach(id => allChecked ? next.delete(id) : next.add(id));
+      return next;
+    });
+  };
+
+  const handleSave = async () => {
+    const add = [...checkedIds].filter(id => !initialIds.has(id));
+    const remove = [...initialIds].filter(id => !checkedIds.has(id));
+    if (!add.length && !remove.length) { onClose(); return; }
     try {
-      await circlesApi.addAccount(circle.id, accountId);
-      await fetchData();
-      onUpdate();
-    } catch {
-      setError("Failed to add account");
+      setSaving(true); setError("");
+      await circlesApi.bulkUpdateAccounts(circle.id, { add, remove });
+      onSaved();
+      onClose();
+    } catch (err) {
+      setError(err.response?.data?.detail || "Failed to save changes");
+      setSaving(false);
     }
   };
 
-  const handleRemove = async (accountId) => {
-    try {
-      await circlesApi.removeAccount(circle.id, accountId);
-      await fetchData();
-      onUpdate();
-    } catch {
-      setError("Failed to remove account");
-    }
-  };
-
-  const accountLabel = (account) =>
-    account.nickname || `${account.account_type_code} @ ${account.broker_code}`;
+  const grouped = groupByMember(allAccounts);
+  const addCount = [...checkedIds].filter(id => !initialIds.has(id)).length;
+  const removeCount = [...initialIds].filter(id => !checkedIds.has(id)).length;
+  const hasChanges = addCount > 0 || removeCount > 0;
 
   return (
-    <div
-      style={{
-        position: "fixed",
-        inset: 0,
-        zIndex: 100,
-        background: "rgba(0,0,0,0.4)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        padding: "20px",
-      }}
-    >
-      <div
-        style={{
-          background: "var(--card-bg)",
-          border: "1px solid var(--card-border)",
-          borderRadius: "16px",
-          padding: "28px",
-          width: "100%",
-          maxWidth: "520px",
-          maxHeight: "90vh",
-          overflowY: "auto",
-        }}
-      >
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            marginBottom: "20px",
-          }}
-        >
+    <div style={{ position: "fixed", inset: 0, zIndex: 100, background: "rgba(0,0,0,0.4)",
+      display: "flex", alignItems: "center", justifyContent: "center", padding: "20px" }}>
+      <div style={{ background: "var(--card-bg)", border: "1px solid var(--card-border)",
+        borderRadius: "16px", width: "100%", maxWidth: "540px",
+        maxHeight: "90vh", display: "flex", flexDirection: "column" }}>
+
+        {/* Header */}
+        <div style={{ padding: "20px 24px 16px", borderBottom: "1px solid var(--card-border)",
+          display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
           <div>
-            <h2
-              style={{
-                fontSize: "16px",
-                fontWeight: "700",
-                color: "var(--text-primary)",
-              }}
-            >
-              {circle.name}
+            <h2 style={{ fontSize: "16px", fontWeight: "700", color: "var(--text-primary)", marginBottom: "2px" }}>
+              Manage accounts
             </h2>
-            <p
-              style={{
-                fontSize: "12px",
-                color: "var(--text-secondary)",
-                marginTop: "2px",
-              }}
-            >
-              Tag accounts to include in this circle
+            <p style={{ fontSize: "12px", color: "var(--text-secondary)" }}>
+              {circle.name} · {REGION_LABELS[circle.region_code] || circle.region_code}
             </p>
           </div>
-          <button
-            onClick={onClose}
-            style={{
-              background: "none",
-              border: "none",
-              fontSize: "22px",
-              cursor: "pointer",
-              color: "var(--text-secondary)",
-              lineHeight: 1,
-            }}
-          >
+          <button onClick={onClose} style={{ background: "none", border: "none",
+            fontSize: "22px", cursor: "pointer", color: "var(--text-secondary)", lineHeight: 1 }}>
             ×
           </button>
         </div>
 
-        {error && (
-          <div
-            style={{
-              background: "#FEE2E2",
-              border: "1px solid #FECACA",
-              borderRadius: "8px",
-              padding: "10px 14px",
-              marginBottom: "16px",
-              fontSize: "13px",
-              color: "#DC2626",
-            }}
-          >
-            {error}
-          </div>
-        )}
-
-        {loading ? (
-          <div
-            style={{
-              textAlign: "center",
-              padding: "32px",
-              color: "var(--text-secondary)",
-            }}
-          >
-            Loading...
-          </div>
-        ) : (
-          <>
-            <div style={{ marginBottom: "20px" }}>
-              <div
-                style={{
-                  fontSize: "11px",
-                  fontWeight: "700",
-                  textTransform: "uppercase",
-                  letterSpacing: "0.06em",
-                  color: "var(--text-secondary)",
-                  marginBottom: "8px",
-                }}
-              >
-                Tagged accounts ({circleAccounts.length})
-              </div>
-              {circleAccounts.length === 0 ? (
-                <div
-                  style={{
-                    padding: "14px",
-                    borderRadius: "8px",
-                    background: "var(--content-bg)",
-                    textAlign: "center",
-                    fontSize: "13px",
-                    color: "var(--text-secondary)",
-                    border: "1px dashed var(--card-border)",
-                  }}
-                >
-                  No accounts tagged yet
-                </div>
-              ) : (
-                <div
-                  style={{
-                    display: "flex",
-                    flexDirection: "column",
-                    gap: "6px",
-                  }}
-                >
-                  {circleAccounts.map((account) => (
-                    <div
-                      key={account.id}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "space-between",
-                        padding: "10px 14px",
-                        borderRadius: "8px",
-                        background: "var(--accent-light)",
-                        border: "1px solid var(--card-border)",
-                      }}
-                    >
-                      <div>
-                        <div
-                          style={{
-                            fontSize: "13px",
-                            fontWeight: "600",
-                            color: "var(--accent-dark)",
-                          }}
-                        >
-                          {accountLabel(account)}
-                        </div>
-                        <div
-                          style={{
-                            fontSize: "11px",
-                            color: "var(--text-secondary)",
-                            marginTop: "2px",
-                          }}
-                        >
-                          {getMemberName(account.member_id)} ·{" "}
-                          {account.account_type_code}
-                        </div>
-                      </div>
-                      <button
-                        onClick={() => handleRemove(account.id)}
-                        style={{
-                          padding: "4px 10px",
-                          borderRadius: "6px",
-                          border: "1.5px solid #FECACA",
-                          background: "white",
-                          color: "#DC2626",
-                          fontSize: "12px",
-                          fontWeight: "600",
-                          cursor: "pointer",
-                        }}
-                      >
-                        Remove
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
+        {/* Body */}
+        <div style={{ flex: 1, overflowY: "auto", padding: "16px 24px" }}>
+          {error && (
+            <div style={{ background: "#FEE2E2", border: "1px solid #FECACA", borderRadius: "8px",
+              padding: "10px 14px", marginBottom: "16px", fontSize: "13px", color: "#DC2626" }}>
+              {error}
             </div>
+          )}
+          {loading ? (
+            <div style={{ textAlign: "center", padding: "40px", color: "var(--text-secondary)", fontSize: "13px" }}>
+              Loading accounts...
+            </div>
+          ) : allAccounts.length === 0 ? (
+            <div style={{ textAlign: "center", padding: "40px", color: "var(--text-secondary)", fontSize: "13px" }}>
+              No accounts found for this region. Add accounts under Manage → Accounts.
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+              {Object.values(grouped).map(({ member_name, accounts }) => {
+                const allChecked = accounts.every(a => checkedIds.has(a.id));
+                const someChecked = accounts.some(a => checkedIds.has(a.id));
+                return (
+                  <div key={member_name} style={{ border: "1px solid var(--card-border)",
+                    borderRadius: "10px", overflow: "hidden" }}>
 
-            {availableAccounts.length > 0 && (
-              <div>
-                <div
-                  style={{
-                    fontSize: "11px",
-                    fontWeight: "700",
-                    textTransform: "uppercase",
-                    letterSpacing: "0.06em",
-                    color: "var(--text-secondary)",
-                    marginBottom: "8px",
-                  }}
-                >
-                  Available to add ({availableAccounts.length})
-                </div>
-                <div
-                  style={{
-                    display: "flex",
-                    flexDirection: "column",
-                    gap: "6px",
-                  }}
-                >
-                  {availableAccounts.map((account) => (
-                    <div
-                      key={account.id}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "space-between",
-                        padding: "10px 14px",
-                        borderRadius: "8px",
-                        background: "var(--content-bg)",
-                        border: "1px solid var(--card-border)",
-                      }}
-                    >
-                      <div>
-                        <div
-                          style={{
-                            fontSize: "13px",
-                            fontWeight: "600",
-                            color: "var(--text-primary)",
-                          }}
-                        >
-                          {accountLabel(account)}
-                        </div>
-                        <div
-                          style={{
-                            fontSize: "11px",
-                            color: "var(--text-secondary)",
-                            marginTop: "2px",
-                          }}
-                        >
-                          {getMemberName(account.member_id)} ·{" "}
-                          {account.account_type_code}
-                        </div>
-                      </div>
-                      <button
-                        onClick={() => handleAdd(account.id)}
-                        style={{
-                          padding: "4px 12px",
-                          borderRadius: "6px",
-                          border: "none",
-                          background: "var(--sidebar-bg)",
-                          color: "white",
-                          fontSize: "12px",
-                          fontWeight: "600",
-                          cursor: "pointer",
-                        }}
-                      >
-                        + Tag
-                      </button>
+                    {/* Member header — click to toggle all accounts for this member */}
+                    <div onClick={() => toggleMember(accounts)}
+                      style={{ display: "flex", alignItems: "center", gap: "10px",
+                        padding: "10px 14px", background: "var(--content-bg)",
+                        cursor: "pointer", userSelect: "none",
+                        borderBottom: "1px solid var(--card-border)" }}>
+                      <Checkbox checked={allChecked} indeterminate={!allChecked && someChecked} />
+                      <span style={{ fontSize: "13px", fontWeight: "700", color: "var(--text-primary)" }}>
+                        {member_name}
+                      </span>
+                      <span style={{ fontSize: "11px", color: "var(--text-secondary)", marginLeft: "auto" }}>
+                        {accounts.filter(a => checkedIds.has(a.id)).length}/{accounts.length} selected
+                      </span>
                     </div>
-                  ))}
-                </div>
-              </div>
-            )}
 
-            {availableAccounts.length === 0 && circleAccounts.length > 0 && (
-              <div
-                style={{
-                  padding: "12px",
-                  borderRadius: "8px",
-                  background: "var(--content-bg)",
-                  textAlign: "center",
-                  fontSize: "13px",
-                  color: "var(--text-secondary)",
-                  border: "1px dashed var(--card-border)",
-                }}
-              >
-                All available accounts are already tagged
-              </div>
-            )}
-          </>
-        )}
+                    {/* Account rows */}
+                    {accounts.map((account, idx) => {
+                      const checked = checkedIds.has(account.id);
+                      const { style: tc, label: taxLabel } = taxBadge(account.tax_category);
+                      return (
+                        <div key={account.id} onClick={() => toggle(account.id)}
+                          style={{ display: "flex", alignItems: "center", gap: "12px",
+                            padding: "10px 14px", cursor: "pointer", userSelect: "none",
+                            background: checked ? "var(--accent-light)" : "var(--card-bg)",
+                            borderBottom: idx < accounts.length - 1 ? "1px solid var(--card-border)" : "none",
+                            transition: "background 0.1s" }}>
+                          <Checkbox checked={checked} />
+                          <div style={{ flex: 1 }}>
+                            <div style={{ fontSize: "13px", fontWeight: "500", color: "var(--text-primary)" }}>
+                              {accountLabel(account)}
+                            </div>
+                            <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginTop: "1px" }}>
+                              {account.broker_code}
+                            </div>
+                          </div>
+                          {account.tax_category && (
+                            <span style={{ fontSize: "10px", fontWeight: "600",
+                              padding: "2px 7px", borderRadius: "4px", ...tc }}>
+                              {taxLabel}
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div style={{ padding: "14px 24px", borderTop: "1px solid var(--card-border)",
+          display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px" }}>
+          <div style={{ fontSize: "12px", color: "var(--text-secondary)" }}>
+            {hasChanges ? (
+              <>
+                {addCount > 0 && <span style={{ color: "#14532D" }}>+{addCount} to add</span>}
+                {addCount > 0 && removeCount > 0 && <span style={{ margin: "0 6px" }}>·</span>}
+                {removeCount > 0 && <span style={{ color: "#991B1B" }}>−{removeCount} to remove</span>}
+              </>
+            ) : "No changes"}
+          </div>
+          <div style={{ display: "flex", gap: "8px" }}>
+            <button onClick={onClose}
+              style={{ padding: "9px 18px", borderRadius: "8px",
+                border: "1.5px solid var(--card-border)", background: "white",
+                color: "var(--text-primary)", fontSize: "13px", fontWeight: "600", cursor: "pointer" }}>
+              Cancel
+            </button>
+            <button onClick={handleSave} disabled={saving || !hasChanges}
+              style={{ padding: "9px 18px", borderRadius: "8px", border: "none",
+                background: "var(--sidebar-bg)", color: "white", fontSize: "13px", fontWeight: "600",
+                cursor: (saving || !hasChanges) ? "not-allowed" : "pointer",
+                opacity: (saving || !hasChanges) ? 0.5 : 1 }}>
+              {saving ? "Saving..." : "Save changes"}
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );
 }
 
-function CircleCard({ circle, onEdit, onDelete, onUpdate }) {
-  const [expanded, setExpanded] = useState(true);
-  const [accounts, setAccounts] = useState([]);
-  const [members, setMembers] = useState([]);
-  const [loadingAccounts, setLoadingAccounts] = useState(false);
-  const [showAddModal, setShowAddModal] = useState(false);
-  const [fetched, setFetched] = useState(false);
-  const { refreshCircles, refreshFilterOptions } = useFilters();
+// ── Reusable checkbox ─────────────────────────────────────────
 
-  const taxLabel = (tax) => {
-    const map = {
-      TAX_FREE: "Tax free",
-      TAX_DEFERRED: "Tax deferred",
-      TAXABLE: "Taxable",
-      CORP_TAXABLE: "Corp",
-    };
-    return map[tax] || tax;
-  };
+function Checkbox({ checked, indeterminate = false }) {
+  return (
+    <div style={{
+      width: "16px", height: "16px", borderRadius: "4px", flexShrink: 0,
+      border: `2px solid ${checked || indeterminate ? "var(--accent)" : "var(--card-border)"}`,
+      background: checked ? "var(--accent)" : "white",
+      display: "flex", alignItems: "center", justifyContent: "center",
+    }}>
+      {checked && (
+        <svg width="10" height="8" viewBox="0 0 10 8" fill="none">
+          <path d="M1 4l3 3 5-6" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      )}
+      {!checked && indeterminate && (
+        <div style={{ width: "8px", height: "2px", background: "var(--accent)", borderRadius: "1px" }} />
+      )}
+    </div>
+  );
+}
 
-  const taxColor = (tax) => {
-    const map = {
-      TAX_FREE: { bg: "#DCFCE7", color: "#14532D" },
-      TAX_DEFERRED: { bg: "#DBEAFE", color: "#1D4ED8" },
-      TAXABLE: { bg: "#FEF3C7", color: "#92400E" },
-      CORP_TAXABLE: { bg: "#F3E8FF", color: "#6D28D9" },
-    };
-    return map[tax] || { bg: "#F3F4F6", color: "#374151" };
-  };
+// ── Circle card — pure display, accounts passed as props ──────
 
-  const regionLabel = (code) => {
-    const map = { CA: "Canada", US: "United States", IN: "India" };
-    return map[code] || code;
-  };
-
-  const fetchAccounts = async () => {
-    try {
-      setLoadingAccounts(true);
-      const [accRes, memRes] = await Promise.all([
-        circlesApi.getAccounts(circle.id),
-        membersApi.getAll(),
-      ]);
-      setAccounts(accRes.data);
-      setMembers(memRes.data);
-      setFetched(true);
-    } catch {
-      // silently fail
-    } finally {
-      setLoadingAccounts(false);
-    }
-  };
-
-  useEffect(() => {
-    fetchAccounts();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const handleExpand = () => {
-    if (!expanded && !fetched) {
-      fetchAccounts();
-    }
-    setExpanded(!expanded);
-  };
-
-  const getMemberName = (memberId) =>
-    members.find((m) => m.id === memberId)?.display_name || "";
-
-  const accountLabel = (account) =>
-    account.nickname || `${account.account_type_code} @ ${account.broker_code}`;
+function CircleCard({ circle, onEdit, onDelete, onManaged }) {
+  const [showManageModal, setShowManageModal] = useState(false);
+  const grouped = groupByMember(circle.accounts || []);
 
   return (
     <>
-      <div
-        style={{
-          background: "var(--card-bg)",
-          border: "1px solid var(--card-border)",
-          borderRadius: "12px",
-          overflow: "hidden",
-        }}
-      >
-        {/* Header */}
-        <div
-          onClick={handleExpand}
-          style={{
-            padding: "16px 20px",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            cursor: "pointer",
-            userSelect: "none",
-          }}
-        >
-          <div style={{ display: "flex", alignItems: "center", gap: "14px" }}>
-            <div
-              style={{
-                width: "42px",
-                height: "42px",
-                borderRadius: "50%",
-                background: "var(--accent-light)",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                flexShrink: 0,
-              }}
-            >
-              <svg viewBox="0 0 18 18" fill="none" width="20" height="20">
-                <circle
-                  cx="9"
-                  cy="9"
-                  r="6.5"
-                  stroke="var(--accent)"
-                  strokeWidth="1.5"
-                />
-                <circle
-                  cx="9"
-                  cy="9"
-                  r="3"
-                  stroke="var(--accent)"
-                  strokeWidth="1.3"
-                />
-              </svg>
-            </div>
-            <div>
-              <div
-                style={{
-                  fontSize: "15px",
-                  fontWeight: "700",
-                  color: "var(--text-primary)",
-                  marginBottom: "4px",
-                }}
-              >
-                {circle.name}
-              </div>
-              <div
-                style={{ display: "flex", alignItems: "center", gap: "8px" }}
-              >
-                <span
-                  style={{
-                    fontSize: "11px",
-                    fontWeight: "600",
-                    padding: "2px 8px",
-                    borderRadius: "6px",
-                    background: "var(--accent-light)",
-                    color: "var(--accent-dark)",
-                  }}
-                >
-                  {regionLabel(circle.region_code)}
-                </span>
-                {circle.description && (
-                  <span
-                    style={{ fontSize: "12px", color: "var(--text-secondary)" }}
-                  >
-                    {circle.description}
-                  </span>
-                )}
-              </div>
-            </div>
-          </div>
+      <div style={{ background: "var(--card-bg)", border: "1px solid var(--card-border)",
+        borderRadius: "12px", overflow: "hidden" }}>
 
-          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                onEdit(circle);
-              }}
-              style={{
-                padding: "5px 12px",
-                borderRadius: "7px",
-                border: "1.5px solid var(--card-border)",
-                background: "white",
-                color: "var(--text-primary)",
-                fontSize: "12px",
-                fontWeight: "600",
-                cursor: "pointer",
-              }}
-            >
+        {/* Header */}
+        <div style={{ padding: "16px 20px", display: "flex", alignItems: "center",
+          justifyContent: "space-between",
+          borderBottom: circle.accounts?.length > 0 ? "1px solid var(--card-border)" : "none" }}>
+          <div>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <span style={{ fontSize: "14px", fontWeight: "700", color: "var(--text-primary)" }}>
+                {circle.name}
+              </span>
+              <span style={{ fontSize: "11px", color: "var(--text-secondary)",
+                background: "var(--content-bg)", border: "1px solid var(--card-border)",
+                borderRadius: "4px", padding: "1px 7px" }}>
+                {REGION_LABELS[circle.region_code] || circle.region_code}
+              </span>
+              <span style={{ fontSize: "11px", color: "var(--text-secondary)" }}>
+                {circle.accounts?.length || 0} account{circle.accounts?.length !== 1 ? "s" : ""}
+              </span>
+            </div>
+            {circle.description && (
+              <p style={{ fontSize: "12px", color: "var(--text-secondary)", marginTop: "3px" }}>
+                {circle.description}
+              </p>
+            )}
+          </div>
+          <div style={{ display: "flex", gap: "6px", flexShrink: 0 }}>
+            <button onClick={() => setShowManageModal(true)}
+              style={{ padding: "6px 14px", borderRadius: "7px",
+                border: "1.5px solid var(--accent)", background: "transparent",
+                color: "var(--accent)", fontSize: "12px", fontWeight: "600", cursor: "pointer" }}>
+              Manage accounts
+            </button>
+            <button onClick={() => onEdit(circle)}
+              style={{ padding: "6px 12px", borderRadius: "7px",
+                border: "1.5px solid var(--card-border)", background: "white",
+                color: "var(--text-primary)", fontSize: "12px", fontWeight: "600", cursor: "pointer" }}>
               Edit
             </button>
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                onDelete(circle);
-              }}
-              style={{
-                padding: "5px 12px",
-                borderRadius: "7px",
-                border: "1.5px solid #FECACA",
-                background: "white",
-                color: "#DC2626",
-                fontSize: "12px",
-                fontWeight: "600",
-                cursor: "pointer",
-              }}
-            >
+            <button onClick={() => onDelete(circle)}
+              style={{ padding: "6px 12px", borderRadius: "7px",
+                border: "1.5px solid #FECACA", background: "white",
+                color: "#DC2626", fontSize: "12px", fontWeight: "600", cursor: "pointer" }}>
               Delete
             </button>
-            <div
-              style={{
-                width: "28px",
-                height: "28px",
-                borderRadius: "6px",
-                background: "var(--content-bg)",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                transition: "transform 0.2s",
-                transform: expanded ? "rotate(180deg)" : "rotate(0deg)",
-              }}
-            >
-              <svg viewBox="0 0 14 14" fill="none" width="14" height="14">
-                <path
-                  d="M2 4l5 5 5-5"
-                  stroke="var(--text-secondary)"
-                  strokeWidth="1.5"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
-            </div>
           </div>
         </div>
 
-        {/* Expanded content */}
-        {expanded && (
-          <div
-            style={{
-              borderTop: "1px solid var(--filter-row-border)",
-              padding: "16px 20px",
-            }}
-          >
-            {loadingAccounts ? (
-              <div
-                style={{
-                  textAlign: "center",
-                  padding: "16px",
-                  fontSize: "13px",
-                  color: "var(--text-secondary)",
-                }}
-              >
-                Loading accounts...
-              </div>
-            ) : accounts.length === 0 ? (
-              <div
-                style={{
-                  padding: "24px",
-                  borderRadius: "10px",
-                  border: "1.5px dashed var(--card-border)",
-                  textAlign: "center",
-                  background: "var(--content-bg)",
-                }}
-              >
-                <div style={{ fontSize: "24px", marginBottom: "8px" }}>🏦</div>
-                <div
-                  style={{
-                    fontSize: "13px",
-                    fontWeight: "600",
-                    color: "var(--text-primary)",
-                    marginBottom: "4px",
-                  }}
-                >
-                  No accounts tagged yet
+        {/* Tagged accounts grouped by member */}
+        {circle.accounts?.length > 0 && (
+          <div style={{ padding: "12px 20px", display: "flex", flexDirection: "column", gap: "10px" }}>
+            {Object.values(grouped).map(({ member_name, accounts }) => (
+              <div key={member_name}>
+                <div style={{ fontSize: "11px", fontWeight: "700", textTransform: "uppercase",
+                  letterSpacing: "0.05em", color: "var(--text-secondary)", marginBottom: "6px" }}>
+                  {member_name}
                 </div>
-                <div
-                  style={{
-                    fontSize: "12px",
-                    color: "var(--text-secondary)",
-                    marginBottom: "16px",
-                  }}
-                >
-                  Tag brokerage accounts to start tracking this circle's
-                  portfolio
-                </div>
-                <button
-                  onClick={() => setShowAddModal(true)}
-                  style={{
-                    padding: "8px 20px",
-                    borderRadius: "8px",
-                    border: "none",
-                    background: "var(--sidebar-bg)",
-                    color: "white",
-                    fontSize: "13px",
-                    fontWeight: "600",
-                    cursor: "pointer",
-                  }}
-                >
-                  + Tag accounts
-                </button>
-              </div>
-            ) : (
-              <>
-                <div
-                  style={{
-                    display: "flex",
-                    flexDirection: "column",
-                    gap: "6px",
-                    marginBottom: "14px",
-                  }}
-                >
-                  {accounts.map((account) => {
-                    const tc = taxColor(account.tax_category);
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
+                  {accounts.map(a => {
+                    const { style: tc, label: taxLabel } = taxBadge(a.tax_category);
                     return (
-                      <div
-                        key={account.id}
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "space-between",
-                          padding: "10px 14px",
-                          borderRadius: "8px",
-                          background: "var(--content-bg)",
-                          border: "1px solid var(--filter-row-border)",
-                        }}
-                      >
-                        <div
-                          style={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: "10px",
-                          }}
-                        >
-                          <span style={{ fontSize: "16px" }}>🏦</span>
-                          <div>
-                            <div
-                              style={{
-                                fontSize: "13px",
-                                fontWeight: "600",
-                                color: "var(--text-primary)",
-                              }}
-                            >
-                              {accountLabel(account)}
-                            </div>
-                            <div
-                              style={{
-                                fontSize: "11px",
-                                color: "var(--text-secondary)",
-                                marginTop: "2px",
-                              }}
-                            >
-                              {getMemberName(account.member_id)}
-                            </div>
-                          </div>
-                        </div>
-                        <span
-                          style={{
-                            fontSize: "11px",
-                            fontWeight: "600",
-                            padding: "2px 8px",
-                            borderRadius: "6px",
-                            background: tc.bg,
-                            color: tc.color,
-                          }}
-                        >
-                          {taxLabel(account.tax_category)}
+                      <div key={a.id} style={{ display: "flex", alignItems: "center", gap: "6px",
+                        padding: "5px 10px", borderRadius: "7px",
+                        border: "1px solid var(--card-border)", background: "var(--content-bg)" }}>
+                        <span style={{ fontSize: "12px", fontWeight: "500", color: "var(--text-primary)" }}>
+                          {accountLabel(a)}
                         </span>
+                        {a.tax_category && (
+                          <span style={{ fontSize: "10px", fontWeight: "600",
+                            padding: "1px 6px", borderRadius: "3px", ...tc }}>
+                            {taxLabel}
+                          </span>
+                        )}
                       </div>
                     );
                   })}
                 </div>
-                <button
-                  onClick={() => setShowAddModal(true)}
-                  style={{
-                    width: "100%",
-                    padding: "9px",
-                    borderRadius: "8px",
-                    border: "1.5px dashed var(--card-border)",
-                    background: "transparent",
-                    color: "var(--accent)",
-                    fontSize: "13px",
-                    fontWeight: "600",
-                    cursor: "pointer",
-                  }}
-                >
-                  + Tag more accounts
-                </button>
-              </>
-            )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Empty state */}
+        {(!circle.accounts || circle.accounts.length === 0) && (
+          <div style={{ padding: "14px 20px", fontSize: "13px", color: "var(--text-secondary)" }}>
+            No accounts tagged yet — click <strong>Manage accounts</strong> to add some.
           </div>
         )}
       </div>
 
-      {showAddModal && (
-        <AddAccountsModal
+      {showManageModal && (
+        <ManageAccountsModal
           circle={circle}
-          onClose={() => setShowAddModal(false)}
-          onUpdate={() => {
-            fetchAccounts();
-            onUpdate();
-            refreshCircles();
-            refreshFilterOptions();
-          }}
+          onClose={() => setShowManageModal(false)}
+          onSaved={onManaged}
         />
       )}
     </>
   );
 }
+
+// ── Main page ─────────────────────────────────────────────────
+// Single API call on load. All state lives here and flows down as props.
 
 function Circles() {
   const [circles, setCircles] = useState([]);
@@ -987,30 +485,24 @@ function Circles() {
   const [error, setError] = useState("");
   const [showModal, setShowModal] = useState(false);
   const [editingCircle, setEditingCircle] = useState(null);
-  const { refreshCircles } = useFilters();
-  const fetchCircles = async () => {
+  const { refreshCircles, refreshFilterOptions } = useFilters();
+
+  const fetchCircles = useCallback(async () => {
     try {
       setLoading(true);
-      const res = await circlesApi.getAll();
+      const res = await circlesApi.getWithAccounts();
       setCircles(res.data);
     } catch {
       setError("Failed to load circles");
     } finally {
       setLoading(false);
     }
-  };
-
-  useEffect(() => {
-    fetchCircles();
   }, []);
 
+  useEffect(() => { fetchCircles(); }, [fetchCircles]);
+
   const handleDelete = async (circle) => {
-    if (
-      !confirm(
-        `Delete "${circle.name}"? This will remove all account associations.`,
-      )
-    )
-      return;
+    if (!confirm(`Delete "${circle.name}"?\n\nThis will remove all account associations.`)) return;
     try {
       await circlesApi.delete(circle.id);
       fetchCircles();
@@ -1020,7 +512,13 @@ function Circles() {
     }
   };
 
-  const handleSave = () => {
+  const handleSaved = () => {
+    fetchCircles();       // re-fetch all circles+accounts in one call
+    refreshCircles();     // update FilterContext circle list
+    refreshFilterOptions(); // update member/account/broker pills
+  };
+
+  const handleModalSave = () => {
     setShowModal(false);
     setEditingCircle(null);
     fetchCircles();
@@ -1029,130 +527,52 @@ function Circles() {
 
   return (
     <div>
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          marginBottom: "24px",
-        }}
-      >
+      {/* Page header */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "24px" }}>
         <div>
-          <h1
-            style={{
-              fontSize: "20px",
-              fontWeight: "700",
-              color: "var(--text-primary)",
-              marginBottom: "4px",
-            }}
-          >
+          <h1 style={{ fontSize: "20px", fontWeight: "700", color: "var(--text-primary)", marginBottom: "4px" }}>
             Circles
           </h1>
           <p style={{ fontSize: "13px", color: "var(--text-secondary)" }}>
             Group accounts together for a consolidated portfolio view
           </p>
         </div>
-        <button
-          onClick={() => {
-            setEditingCircle(null);
-            setShowModal(true);
-          }}
-          style={{
-            padding: "9px 18px",
-            borderRadius: "8px",
-            border: "none",
-            background: "var(--sidebar-bg)",
-            color: "white",
-            fontSize: "13px",
-            fontWeight: "600",
-            cursor: "pointer",
-          }}
-        >
+        <button onClick={() => { setEditingCircle(null); setShowModal(true); }}
+          style={{ padding: "9px 18px", borderRadius: "8px", border: "none",
+            background: "var(--sidebar-bg)", color: "white",
+            fontSize: "13px", fontWeight: "600", cursor: "pointer" }}>
           + Create circle
         </button>
       </div>
 
       {error && (
-        <div
-          style={{
-            background: "#FEE2E2",
-            border: "1px solid #FECACA",
-            borderRadius: "8px",
-            padding: "10px 14px",
-            marginBottom: "16px",
-            fontSize: "13px",
-            color: "#DC2626",
-          }}
-        >
+        <div style={{ background: "#FEE2E2", border: "1px solid #FECACA", borderRadius: "8px",
+          padding: "10px 14px", marginBottom: "16px", fontSize: "13px", color: "#DC2626" }}>
           {error}
         </div>
       )}
 
       {loading && (
-        <div
-          style={{
-            textAlign: "center",
-            padding: "40px",
-            color: "var(--text-secondary)",
-          }}
-        >
+        <div style={{ textAlign: "center", padding: "40px", color: "var(--text-secondary)" }}>
           Loading...
         </div>
       )}
 
-      {!loading && circles.length === 0 && (
-        <div
-          style={{
-            background: "var(--card-bg)",
-            border: "1px solid var(--card-border)",
-            borderRadius: "12px",
-            padding: "48px",
-            textAlign: "center",
-          }}
-        >
+      {!loading && circles.length === 0 && !error && (
+        <div style={{ background: "var(--card-bg)", border: "1px solid var(--card-border)",
+          borderRadius: "12px", padding: "48px", textAlign: "center" }}>
           <div style={{ fontSize: "36px", marginBottom: "12px" }}>⭕</div>
-          <h3
-            style={{
-              fontSize: "15px",
-              fontWeight: "600",
-              color: "var(--text-primary)",
-              marginBottom: "6px",
-            }}
-          >
+          <h3 style={{ fontSize: "15px", fontWeight: "600", color: "var(--text-primary)", marginBottom: "6px" }}>
             No circles yet
           </h3>
-          <p
-            style={{
-              fontSize: "13px",
-              color: "var(--text-secondary)",
-              marginBottom: "8px",
-            }}
-          >
-            A circle groups your accounts together for a consolidated view.
+          <p style={{ fontSize: "13px", color: "var(--text-secondary)", marginBottom: "20px" }}>
+            A circle groups your accounts for a consolidated view.<br />
+            Example: "Sharma Family" with everyone's TFSA and RRSP accounts.
           </p>
-          <p
-            style={{
-              fontSize: "13px",
-              color: "var(--text-secondary)",
-              marginBottom: "20px",
-            }}
-          >
-            Example: "Sharma Family" circle containing everyone's TFSA and RRSP
-            accounts.
-          </p>
-          <button
-            onClick={() => setShowModal(true)}
-            style={{
-              padding: "9px 20px",
-              borderRadius: "8px",
-              border: "none",
-              background: "var(--sidebar-bg)",
-              color: "white",
-              fontSize: "13px",
-              fontWeight: "600",
-              cursor: "pointer",
-            }}
-          >
+          <button onClick={() => setShowModal(true)}
+            style={{ padding: "9px 20px", borderRadius: "8px", border: "none",
+              background: "var(--sidebar-bg)", color: "white",
+              fontSize: "13px", fontWeight: "600", cursor: "pointer" }}>
             + Create your first circle
           </button>
         </div>
@@ -1160,19 +580,13 @@ function Circles() {
 
       {!loading && circles.length > 0 && (
         <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-          {circles.map((circle) => (
+          {circles.map(circle => (
             <CircleCard
               key={circle.id}
               circle={circle}
-              onEdit={(c) => {
-                setEditingCircle(c);
-                setShowModal(true);
-              }}
+              onEdit={c => { setEditingCircle(c); setShowModal(true); }}
               onDelete={handleDelete}
-              onUpdate={() => {
-                fetchCircles();
-                refreshCircles();
-              }}
+              onManaged={handleSaved}
             />
           ))}
         </div>
@@ -1181,11 +595,8 @@ function Circles() {
       {showModal && (
         <CircleModal
           circle={editingCircle}
-          onSave={handleSave}
-          onClose={() => {
-            setShowModal(false);
-            setEditingCircle(null);
-          }}
+          onSave={handleModalSave}
+          onClose={() => { setShowModal(false); setEditingCircle(null); }}
         />
       )}
     </div>

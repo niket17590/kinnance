@@ -2,15 +2,18 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from typing import List
 from uuid import UUID
+from pydantic import BaseModel
 from app.core.database import get_db
 from app.core.security import get_current_db_user
-from app.schemas.circle import CircleCreate, CircleUpdate, CircleAccountAdd, CircleResponse
+from app.schemas.circle import CircleCreate, CircleUpdate, CircleResponse
 from app.services import circle_service
 
-router = APIRouter(
-    prefix="/circles",
-    tags=["Circles"]
-)
+router = APIRouter(prefix="/circles", tags=["Circles"])
+
+
+class BulkAccountsRequest(BaseModel):
+    add: list[str] = []
+    remove: list[str] = []
 
 
 @router.get("", response_model=List[CircleResponse])
@@ -18,8 +21,19 @@ async def get_circles(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_db_user)
 ):
-    """Get all circles for the current user"""
     return circle_service.get_all(db, current_user.id)
+
+
+@router.get("/with-accounts")
+async def get_circles_with_accounts(
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_db_user)
+):
+    """
+    Single endpoint — all circles with their tagged accounts embedded.
+    Replaces GET /circles + N × GET /circles/{id}/accounts on the Circles page.
+    """
+    return circle_service.get_all_with_accounts(db, current_user.id)
 
 
 @router.get("/{circle_id}", response_model=CircleResponse)
@@ -28,7 +42,6 @@ async def get_circle(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_db_user)
 ):
-    """Get a single circle by ID"""
     return circle_service.get_by_id(db, circle_id, current_user.id)
 
 
@@ -38,7 +51,6 @@ async def create_circle(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_db_user)
 ):
-    """Create a new circle"""
     return circle_service.create(db, data, current_user.id)
 
 
@@ -49,7 +61,6 @@ async def update_circle(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_db_user)
 ):
-    """Update a circle"""
     return circle_service.update(db, circle_id, data, current_user.id)
 
 
@@ -59,7 +70,6 @@ async def delete_circle(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_db_user)
 ):
-    """Soft delete a circle"""
     return circle_service.delete(db, circle_id, current_user.id)
 
 
@@ -69,29 +79,20 @@ async def get_circle_accounts(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_db_user)
 ):
-    """Get all accounts in a circle with member details"""
     return circle_service.get_accounts(db, circle_id, current_user.id)
 
 
-@router.post("/{circle_id}/accounts")
-async def add_account_to_circle(
+@router.post("/{circle_id}/accounts/bulk")
+async def bulk_update_circle_accounts(
     circle_id: UUID,
-    data: CircleAccountAdd,
+    data: BulkAccountsRequest,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_db_user)
 ):
-    """Add an account to a circle"""
-    return circle_service.add_account(
-        db, circle_id, data.account_id, current_user.id)
-
-
-@router.delete("/{circle_id}/accounts/{account_id}")
-async def remove_account_from_circle(
-    circle_id: UUID,
-    account_id: UUID,
-    db: Session = Depends(get_db),
-    current_user=Depends(get_current_db_user)
-):
-    """Remove an account from a circle"""
-    return circle_service.remove_account(
-        db, circle_id, account_id, current_user.id)
+    """
+    Add and/or remove multiple accounts atomically.
+    Body: { "add": ["uuid", ...], "remove": ["uuid", ...] }
+    """
+    return circle_service.bulk_update_accounts(
+        db, circle_id, current_user.id, data.add, data.remove
+    )

@@ -7,35 +7,46 @@ from app.core.security import get_current_db_user
 
 router = APIRouter(prefix="/transactions", tags=["transactions"])
 
+# Allowlist for sort direction — prevents SQL injection
+VALID_SORT_DIRS = {"asc", "desc"}
+
 
 @router.get("")
 def get_transactions(
-    circle_id: Optional[str] = Query(None),
-    member_ids: Optional[str] = Query(None),      # comma-separated
-    account_types: Optional[str] = Query(None),   # comma-separated
-    brokers: Optional[str] = Query(None),          # comma-separated
-    page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=1, le=200),
+    # Global filters (from FilterBar)
+    circle_id:         Optional[str] = Query(None),
+    member_ids:        Optional[str] = Query(None),   # comma-separated
+    account_types:     Optional[str] = Query(None),   # comma-separated
+    brokers:           Optional[str] = Query(None),   # comma-separated
+    # Local transaction filters
+    date_from:         Optional[str] = Query(None),   # YYYY-MM-DD
+    date_to:           Optional[str] = Query(None),   # YYYY-MM-DD
+    transaction_types: Optional[str] = Query(None),   # comma-separated
+    symbol:            Optional[str] = Query(None),   # partial match
+    # Pagination + sort
+    page:              int = Query(1, ge=1),
+    page_size:         int = Query(50, ge=1, le=200),
+    sort_dir:          str = Query("desc"),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_db_user)
 ):
-    """
-    Get paginated transactions filtered by circle, member, account type, broker.
-    All filters are optional — returns all transactions for the user if none provided.
-    """
     owner_id = str(current_user.id)
     offset = (page - 1) * page_size
 
-    # Parse comma-separated filter params into lists
-    member_id_list = [m.strip() for m in member_ids.split(",")] if member_ids else []
-    account_type_list = [a.strip() for a in account_types.split(",")] if account_types else []
-    broker_list = [b.strip() for b in brokers.split(",")] if brokers else []
+    # Sanitise sort direction
+    order = "DESC" if sort_dir.lower() not in VALID_SORT_DIRS or sort_dir.lower() == "desc" else "ASC"
 
-    # Build WHERE clauses dynamically
+    # Parse comma-separated params
+    member_id_list        = [m.strip() for m in member_ids.split(",")]        if member_ids        else []
+    account_type_list     = [a.strip() for a in account_types.split(",")]     if account_types     else []
+    broker_list           = [b.strip() for b in brokers.split(",")]           if brokers           else []
+    transaction_type_list = [t.strip() for t in transaction_types.split(",")] if transaction_types else []
+
+    # ── Build WHERE clauses ───────────────────────────────────
     where_clauses = ["m.owner_id = :owner_id"]
     params = {"owner_id": owner_id, "limit": page_size, "offset": offset}
 
-    # Circle filter — only accounts tagged to this circle
+    # Circle filter
     if circle_id:
         where_clauses.append("""
             ma.id IN (
@@ -66,9 +77,30 @@ def get_transactions(
         for i, b in enumerate(broker_list):
             params[f"broker_{i}"] = b
 
+    # Date range filter
+    if date_from:
+        where_clauses.append("t.trade_date >= :date_from")
+        params["date_from"] = date_from
+
+    if date_to:
+        where_clauses.append("t.trade_date <= :date_to")
+        params["date_to"] = date_to
+
+    # Transaction type filter
+    if transaction_type_list:
+        placeholders = ", ".join(f":txn_type_{i}" for i in range(len(transaction_type_list)))
+        where_clauses.append(f"t.transaction_type IN ({placeholders})")
+        for i, tt in enumerate(transaction_type_list):
+            params[f"txn_type_{i}"] = tt
+
+    # Symbol filter — case-insensitive partial match on normalised symbol
+    if symbol:
+        where_clauses.append("t.symbol_normalized ILIKE :symbol")
+        params["symbol"] = f"%{symbol.strip().upper()}%"
+
     where_sql = " AND ".join(where_clauses)
 
-    # Main query
+    # ── Main query ────────────────────────────────────────────
     rows = db.execute(
         text(f"""
             SELECT
@@ -89,35 +121,35 @@ def get_transactions(
                 t.net_amount_cad,
                 t.fx_rate_to_cad,
                 t.notes,
-                ma.id            AS account_id,
+                ma.id                AS account_id,
                 ma.account_type_code,
-                ma.nickname      AS account_nickname,
+                ma.nickname          AS account_nickname,
                 ma.broker_code,
-                m.id             AS member_id,
-                m.display_name   AS member_name,
-                b.name           AS broker_name,
-                at.name          AS account_type_name
+                m.id                 AS member_id,
+                m.display_name       AS member_name,
+                b.name               AS broker_name,
+                at.name              AS account_type_name
             FROM transactions t
             JOIN member_accounts ma ON t.account_id = ma.id
-            JOIN members m ON ma.member_id = m.id
-            JOIN brokers b ON ma.broker_code = b.code
-            JOIN account_types at ON ma.account_type_code = at.code
+            JOIN members m          ON ma.member_id = m.id
+            JOIN brokers b          ON ma.broker_code = b.code
+            JOIN account_types at   ON ma.account_type_code = at.code
             WHERE {where_sql}
-            ORDER BY t.trade_date DESC, t.created_at DESC
+            ORDER BY t.trade_date {order}, t.created_at {order}
             LIMIT :limit OFFSET :offset
         """),
         params
     ).fetchall()
 
-    # Count query for pagination
+    # ── Count query (reuses same WHERE, excludes pagination params) ──
     count_row = db.execute(
         text(f"""
             SELECT COUNT(*) as total
             FROM transactions t
             JOIN member_accounts ma ON t.account_id = ma.id
-            JOIN members m ON ma.member_id = m.id
-            JOIN brokers b ON ma.broker_code = b.code
-            JOIN account_types at ON ma.account_type_code = at.code
+            JOIN members m          ON ma.member_id = m.id
+            JOIN brokers b          ON ma.broker_code = b.code
+            JOIN account_types at   ON ma.account_type_code = at.code
             WHERE {where_sql}
         """),
         {k: v for k, v in params.items() if k not in ("limit", "offset")}
@@ -134,6 +166,6 @@ def get_transactions(
             "total": total,
             "total_pages": total_pages,
             "has_next": page < total_pages,
-            "has_prev": page > 1
+            "has_prev": page > 1,
         }
     }

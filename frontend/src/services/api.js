@@ -66,13 +66,13 @@ export const memberAccountsApi = {
 // ── Circles ───────────────────────────────────────────────────
 export const circlesApi = {
   getAll: () => api.get('/circles'),
+  getWithAccounts: () => api.get('/circles/with-accounts'),
   getById: (id) => api.get(`/circles/${id}`),
   create: (data) => api.post('/circles', data),
   update: (id, data) => api.put(`/circles/${id}`, data),
   delete: (id) => api.delete(`/circles/${id}`),
   getAccounts: (circleId) => api.get(`/circles/${circleId}/accounts`),
-  addAccount: (circleId, accountId) => api.post(`/circles/${circleId}/accounts`, { account_id: accountId }),
-  removeAccount: (circleId, accountId) => api.delete(`/circles/${circleId}/accounts/${accountId}`)
+  bulkUpdateAccounts: (circleId, data) => api.post(`/circles/${circleId}/accounts/bulk`, data)
 }
 
 // ── Reference Data ────────────────────────────────────────────

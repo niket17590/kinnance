@@ -13,7 +13,7 @@ router = APIRouter(
 )
 
 
-@router.get("", response_model=List[MemberAccountResponse])
+@router.get("")
 async def get_accounts(
     member_id: Optional[UUID] = None,
     db: Session = Depends(get_db),
