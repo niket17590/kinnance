@@ -235,11 +235,19 @@ def rename_security(
         db.execute(text("DELETE FROM holdings WHERE symbol = :old"), {"old": old_sym})
         db.commit()
 
-        # Step 4 — Recalculate holdings
+        # Step 4 — Recalculate holdings + realized gains
         if affected_ids:
-            from app.services.acb_service import recalculate_holdings_for_accounts
+            from app.services.acb_service import recalculate_holdings_for_accounts, recalculate_realized_gains
             recalculate_holdings_for_accounts(db, affected_ids)
-            logger.info(f"Rename: recalculated holdings for {len(affected_ids)} accounts")
+        
+            affected_member_rows = db.execute(
+                text("SELECT DISTINCT member_id FROM member_accounts WHERE id = ANY(CAST(:ids AS uuid[]))"),
+                {"ids": affected_ids}
+            ).fetchall()
+            affected_member_ids = [str(r.member_id) for r in affected_member_rows]
+            recalculate_realized_gains(db, affected_ids, affected_member_ids)
+        
+            logger.info(f"Rename: recalculated holdings and realized gains for {len(affected_ids)} accounts")
 
         # Step 5 — Disable old symbol
         from app.services.price_service import disable_symbol, ensure_securities_exist, push_to_queue
