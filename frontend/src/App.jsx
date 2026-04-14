@@ -18,6 +18,7 @@ import ForgotPassword from './pages/ForgotPassword'
 import AuthCallback from './pages/AuthCallback'
 import ContributionLimits from './pages/ContributionLimits'
 import PortfolioTools from './pages/admin/PortfolioTools'
+import Rebalancer from './pages/Rebalancer'
 
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth()
@@ -72,6 +73,7 @@ function App() {
         <Route path="admin/settings" element={<Settings />} />
         <Route path="contribution-limits" element={<ContributionLimits />} />
         <Route path="/admin/portfolio-tools" element={<PortfolioTools />} />
+        <Route path="rebalancer" element={<Rebalancer />} />
       </Route>
     </Routes>
   )

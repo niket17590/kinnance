@@ -100,6 +100,55 @@ const navItems = [
           </svg>
         ),
       },
+      {
+        path: "/rebalancer",
+        label: "Rebalancer",
+        icon: (
+          <svg viewBox="0 0 18 18" fill="none" width="18" height="18">
+            <line
+              x1="9"
+              y1="4"
+              x2="9"
+              y2="15"
+              stroke="currentColor"
+              strokeWidth="1.3"
+              strokeLinecap="round"
+            />
+            <line
+              x1="4.5"
+              y1="15"
+              x2="13.5"
+              y2="15"
+              stroke="currentColor"
+              strokeWidth="1.3"
+              strokeLinecap="round"
+            />
+            <line
+              x1="3"
+              y1="7"
+              x2="15"
+              y2="7"
+              stroke="currentColor"
+              strokeWidth="1.3"
+              strokeLinecap="round"
+            />
+            <path
+              d="M3 7 L1.5 10.5 Q3 12 4.5 10.5 L3 7Z"
+              stroke="currentColor"
+              strokeWidth="1.2"
+              strokeLinejoin="round"
+              fill="none"
+            />
+            <path
+              d="M15 7 L13.5 10.5 Q15 12 16.5 10.5 L15 7Z"
+              stroke="currentColor"
+              strokeWidth="1.2"
+              strokeLinejoin="round"
+              fill="none"
+            />
+          </svg>
+        ),
+      },
     ],
   },
   {

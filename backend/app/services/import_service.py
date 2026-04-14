@@ -294,46 +294,17 @@ def import_transactions(
     batch_id = create_import_batch(db, owner_id, broker_code, filename)
 
     try:
-        # ── Resolve canonical symbols + convert pre-2025 WS CAD→USD ─
-        # For bare CAD-currency tickers:
-        #   - yfinance confirms US stock → keep original symbol, convert price to USD
-        #   - yfinance returns nothing  → Twelve Data finds Canadian listing → apply suffix
-        # This is WealthSimple-specific: pre-2025 US stocks were settled in CAD.
-        from decimal import Decimal
-        from app.services.price_service import (
-            resolve_canonical_symbol, _is_canadian, get_historical_price_usd
-        )
+        # ── Resolve canonical symbols for bare CAD tickers ────
+        # e.g. QESS → QESS.CN via Twelve Data symbol_search
+        from app.services.price_service import resolve_canonical_symbol, _is_canadian
         for txn in parse_result.transactions:
-            if not txn.symbol_normalized or txn.trade_currency != 'CAD':
-                continue
-            if _is_canadian(txn.symbol_normalized):
-                continue
-
-            canonical = resolve_canonical_symbol(db, txn.symbol_normalized, 'CAD')
-
-            if canonical != txn.symbol_normalized:
-                # Genuinely Canadian stock — apply resolved suffix
-                logger.info(f"Symbol resolved: {txn.symbol_normalized} → {canonical}")
-                txn.symbol_normalized = canonical
-            else:
-                # US stock confirmed by yfinance — convert pre-2025 CAD prices to USD
-                if (broker_code == 'WEALTHSIMPLE'
-                        and txn.transaction_type in ('BUY', 'SELL')
-                        and txn.trade_date):
-                    usd_price = get_historical_price_usd(txn.symbol_normalized, txn.trade_date)
-                    if usd_price:
-                        qty = txn.quantity or Decimal('1')
-                        sign = Decimal('-1') if txn.transaction_type == 'BUY' else Decimal('1')
-                        txn.price_per_unit  = Decimal(str(round(usd_price, 6)))
-                        txn.net_amount      = sign * Decimal(str(round(usd_price, 6))) * qty
-                        txn.gross_amount    = txn.net_amount
-                        txn.net_amount_cad  = Decimal('0')
-                        txn.trade_currency  = 'USD'
-                        logger.info(
-                            f"CAD→USD conversion: {txn.symbol_normalized} "
-                            f"{txn.trade_date} qty={qty} "
-                            f"price={usd_price:.4f} USD"
-                        )
+            if (txn.symbol_normalized
+                    and txn.trade_currency == 'CAD'
+                    and not _is_canadian(txn.symbol_normalized)):
+                canonical = resolve_canonical_symbol(db, txn.symbol_normalized, 'CAD')
+                if canonical != txn.symbol_normalized:
+                    logger.info(f"Symbol resolved: {txn.symbol_normalized} → {canonical}")
+                    txn.symbol_normalized = canonical
                     
         # ── Build account mapping ─────────────────────────────
         account_mapping = {}
@@ -511,14 +482,10 @@ def import_transactions(
             transaction_date_to=date_to,
         )
 
-        # ── Recalculate holdings + realized gains ─────────────
+        # ── Recalculate portfolio ─────────────────────────────
         if imported > 0:
             affected_ids = list(set(account_mapping.values()))
-            from app.services.acb_service import (
-                recalculate_holdings_for_accounts,
-                recalculate_realized_gains,
-            )
-            recalculate_holdings_for_accounts(db, affected_ids)
+            from app.services.acb_service import recalculate_portfolio
 
             affected_member_rows = db.execute(
                 text("""
@@ -529,7 +496,19 @@ def import_transactions(
                 {"ids": affected_ids}
             ).fetchall()
             affected_member_ids = [str(r.member_id) for r in affected_member_rows]
-            recalculate_realized_gains(db, affected_ids, affected_member_ids)
+
+            # Resolve circle_ids for rebalancer cleanup
+            circle_rows = db.execute(
+                text("""
+                    SELECT DISTINCT ca.circle_id
+                    FROM circle_accounts ca
+                    WHERE ca.account_id = ANY(CAST(:ids AS uuid[]))
+                """),
+                {"ids": affected_ids}
+            ).fetchall()
+            affected_circle_ids = [str(r.circle_id) for r in circle_rows]
+
+            recalculate_portfolio(db, affected_ids, affected_member_ids, affected_circle_ids)
 
         # ── Collect symbols for price fetching ────────────────
         imported_symbols = list(set(

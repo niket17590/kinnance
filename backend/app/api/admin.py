@@ -53,11 +53,6 @@ def verify_rename(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_db_user)
 ):
-    """
-    Verify a proposed rename before committing.
-    Resolves new symbol via: security_master -> symbol_aliases -> yfinance
-    Returns stock info + impact data. No DB writes.
-    """
     old_sym = request.old_symbol.upper().strip()
     new_input = request.new_symbol_input.upper().strip()
 
@@ -66,7 +61,6 @@ def verify_rename(
     if old_sym == new_input:
         raise HTTPException(status_code=400, detail="Old and new symbols are the same")
 
-    # Validate old symbol exists
     old_row = db.execute(
         text("SELECT symbol, name FROM security_master WHERE symbol = :sym"),
         {"sym": old_sym}
@@ -74,8 +68,6 @@ def verify_rename(
     if not old_row:
         raise HTTPException(status_code=404, detail=f"{old_sym} not found in security master")
 
-    # ── Resolve new symbol ────────────────────────────────────
-    # Priority 1: exact match in security_master
     stock_info = None
 
     sm_row = db.execute(
@@ -91,7 +83,6 @@ def verify_rename(
             "country":  sm_row.country,
         }
 
-    # Priority 2: check symbol_aliases -> resolve canonical -> look up in security_master
     if not stock_info:
         alias_row = db.execute(
             text("SELECT canonical_symbol FROM symbol_aliases WHERE bare_symbol = :sym"),
@@ -111,7 +102,6 @@ def verify_rename(
                     "country":  sm_row.country,
                 }
 
-    # Priority 3: yfinance as last resort (completely new symbol)
     if not stock_info:
         try:
             ticker = yf.Ticker(new_input)
@@ -137,7 +127,6 @@ def verify_rename(
                 detail=f"Could not find '{new_input}'. Please enter the exact ticker symbol."
             )
 
-    # ── Fetch impact from DB ──────────────────────────────────
     txn_row = db.execute(
         text("""
             SELECT COUNT(*) as count FROM transactions
@@ -191,10 +180,6 @@ def rename_security(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_db_user)
 ):
-    """
-    Execute symbol rename. Call verify-rename first.
-    Updates transactions, holdings, security_master, price_cache, symbol_aliases.
-    """
     old_sym = request.old_symbol.upper().strip()
     new_sym = request.new_symbol.upper().strip()
 
@@ -224,40 +209,60 @@ def rename_security(
         db.commit()
         logger.info(f"Rename: updated {txn_count} transactions {old_sym} → {new_sym}")
 
-        # Step 2 — Find affected accounts
+        # Step 2 — Find affected accounts + circles
         affected_rows = db.execute(
             text("SELECT DISTINCT account_id FROM holdings WHERE symbol = :old"),
             {"old": old_sym}
         ).fetchall()
         affected_ids = [str(r.account_id) for r in affected_rows]
 
+        circle_rows = db.execute(
+            text("""
+                SELECT DISTINCT ca.circle_id
+                FROM circle_accounts ca
+                WHERE ca.account_id = ANY(CAST(:ids AS uuid[]))
+            """),
+            {"ids": affected_ids}
+        ).fetchall() if affected_ids else []
+        affected_circle_ids = [str(r.circle_id) for r in circle_rows]
+
         # Step 3 — Delete old holding rows
         db.execute(text("DELETE FROM holdings WHERE symbol = :old"), {"old": old_sym})
         db.commit()
 
-        # Step 4 — Recalculate holdings + realized gains
+        # Step 4 — Update rebalancer_targets symbol reference (no-op if table doesn't exist yet)
+        try:
+            db.execute(
+                text("UPDATE rebalancer_targets SET symbol = :new WHERE symbol = :old"),
+                {"old": old_sym, "new": new_sym}
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.debug(f"rebalancer_targets not yet created — skipping symbol update for rename {old_sym} → {new_sym}")
+
+        # Step 5 — Recalculate portfolio via unified pipeline
         if affected_ids:
-            from app.services.acb_service import recalculate_holdings_for_accounts, recalculate_realized_gains
-            recalculate_holdings_for_accounts(db, affected_ids)
-        
+            from app.services.acb_service import recalculate_portfolio
+
             affected_member_rows = db.execute(
                 text("SELECT DISTINCT member_id FROM member_accounts WHERE id = ANY(CAST(:ids AS uuid[]))"),
                 {"ids": affected_ids}
             ).fetchall()
             affected_member_ids = [str(r.member_id) for r in affected_member_rows]
-            recalculate_realized_gains(db, affected_ids, affected_member_ids)
-        
-            logger.info(f"Rename: recalculated holdings and realized gains for {len(affected_ids)} accounts")
 
-        # Step 5 — Disable old symbol
+            recalculate_portfolio(db, affected_ids, affected_member_ids, affected_circle_ids)
+            logger.info(f"Rename: recalculated portfolio for {len(affected_ids)} accounts")
+
+        # Step 6 — Disable old symbol
         from app.services.price_service import disable_symbol, ensure_securities_exist, push_to_queue
         disable_symbol(db, old_sym)
 
-        # Step 6 — Ensure new symbol exists + push to queue
+        # Step 7 — Ensure new symbol exists + push to queue
         ensure_securities_exist(db, [new_sym])
         push_to_queue([new_sym], priority=True)
 
-        # Step 7 — Update symbol_aliases
+        # Step 8 — Update symbol_aliases
         db.execute(
             text("UPDATE symbol_aliases SET canonical_symbol = :new WHERE canonical_symbol = :old"),
             {"old": old_sym, "new": new_sym}

@@ -22,6 +22,7 @@ from app.api import holdings
 from app.api.scheduler import start_scheduler, stop_scheduler
 from app.api import admin
 from app.api import capital_gains
+from app.api import rebalancer
 
 settings = get_settings()
 
@@ -123,3 +124,4 @@ app.include_router(transactions.router, prefix="/api/v1")
 app.include_router(holdings.router, prefix="/api/v1")
 app.include_router(admin.router, prefix="/api/v1")
 app.include_router(capital_gains.router, prefix="/api/v1")
+app.include_router(rebalancer.router, prefix="/api/v1")

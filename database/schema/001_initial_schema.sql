@@ -967,3 +967,29 @@ CREATE INDEX IF NOT EXISTS idx_rgc_symbol
 
 COMMENT ON TABLE realized_gains_consolidated IS 'CPA view — cross-broker ACB per member per symbol per year for Schedule 3';
 COMMENT ON COLUMN realized_gains_consolidated.total_acb IS 'True cross-broker weighted average ACB — differs from broker reports when same stock held at multiple brokers';
+
+
+- ============================================================
+
+CREATE TABLE IF NOT EXISTS rebalancer_targets (
+    id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    circle_id           UUID NOT NULL REFERENCES circles(id) ON DELETE CASCADE,
+    symbol              TEXT NOT NULL,
+    target_weight_pct   NUMERIC(5,2) NOT NULL DEFAULT 0,
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_rebalancer_circle_symbol
+        UNIQUE (circle_id, symbol),
+    CONSTRAINT chk_target_weight
+        CHECK (target_weight_pct >= 0 AND target_weight_pct <= 100)
+);
+
+CREATE INDEX IF NOT EXISTS idx_rebalancer_targets_circle
+    ON rebalancer_targets(circle_id);
+
+CREATE TRIGGER trigger_rebalancer_targets_updated_at
+    BEFORE UPDATE ON rebalancer_targets
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+COMMENT ON TABLE rebalancer_targets IS 'User-defined target weights per symbol per circle for portfolio rebalancing';
+COMMENT ON COLUMN rebalancer_targets.target_weight_pct IS '0-100 — target % of portfolio. Total across circle can be < 100 (user may only target some positions).';

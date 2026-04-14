@@ -599,3 +599,48 @@ def _recalculate_consolidated_for_member(db: Session, member_id: str):
     logger.info(
         f"Consolidated realized gains: {len(upsert_rows)} symbol-year records for member {member_id}"
     )
+
+
+# ============================================================
+# PORTFOLIO RECALCULATION PIPELINE
+# Single entry point for all post-change recalculations.
+# Call this after any import, rename, split, or batch delete.
+# ============================================================
+
+def recalculate_portfolio(
+    db: Session,
+    account_ids: list[str],
+    member_ids: list[str],
+    circle_ids: list[str] = None,
+):
+    """
+    Unified recalculation pipeline — replaces all scattered calls.
+
+    Sequence:
+      1. recalculate_holdings_for_accounts  (holdings + cash per account)
+      2. recalculate_realized_gains         (per account + per member)
+      3. _cleanup_rebalancer_targets        (remove stale symbols per circle)
+
+    Pass circle_ids when you know which circles are affected (import, batch delete).
+    For rename/split, pass circle_ids=None — cleanup runs on next import.
+    """
+    recalculate_holdings_for_accounts(db, account_ids)
+    recalculate_realized_gains(db, account_ids, member_ids)
+    if circle_ids:
+        _cleanup_rebalancer_targets(db, circle_ids)
+
+
+def _cleanup_rebalancer_targets(db: Session, circle_ids: list[str]):
+    db.execute(text("""
+        DELETE FROM rebalancer_targets rt
+        WHERE rt.circle_id = ANY(CAST(:circle_ids AS uuid[]))
+        AND NOT EXISTS (
+            SELECT 1 FROM holdings h
+            JOIN member_accounts ma ON h.account_id = ma.id
+            JOIN circle_accounts ca ON ca.account_id = ma.id
+            WHERE ca.circle_id = rt.circle_id
+            AND h.symbol = rt.symbol
+            AND h.is_position_open = TRUE
+        )
+    """), {"circle_ids": circle_ids})
+    db.commit()

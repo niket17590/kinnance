@@ -764,3 +764,54 @@ CREATE POLICY rgc_super_admin
     USING (
         EXISTS (SELECT 1 FROM users WHERE auth_user_id = auth.uid() AND is_super_admin = TRUE)
     );
+
+
+
+
+ALTER TABLE rebalancer_targets ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY rebalancer_targets_select_own
+    ON rebalancer_targets FOR SELECT
+    USING (
+        circle_id IN (
+            SELECT id FROM circles
+            WHERE owner_id = (SELECT id FROM users WHERE auth_user_id = auth.uid())
+        )
+    );
+
+CREATE POLICY rebalancer_targets_insert_own
+    ON rebalancer_targets FOR INSERT
+    WITH CHECK (
+        circle_id IN (
+            SELECT id FROM circles
+            WHERE owner_id = (SELECT id FROM users WHERE auth_user_id = auth.uid())
+        )
+    );
+
+CREATE POLICY rebalancer_targets_update_own
+    ON rebalancer_targets FOR UPDATE
+    USING (
+        circle_id IN (
+            SELECT id FROM circles
+            WHERE owner_id = (SELECT id FROM users WHERE auth_user_id = auth.uid())
+        )
+    );
+
+CREATE POLICY rebalancer_targets_delete_own
+    ON rebalancer_targets FOR DELETE
+    USING (
+        circle_id IN (
+            SELECT id FROM circles
+            WHERE owner_id = (SELECT id FROM users WHERE auth_user_id = auth.uid())
+        )
+    );
+
+CREATE POLICY rebalancer_targets_super_admin
+    ON rebalancer_targets FOR ALL
+    USING (
+        EXISTS (
+            SELECT 1 FROM users
+            WHERE auth_user_id = auth.uid()
+            AND is_super_admin = TRUE
+        )
+    );
