@@ -51,7 +51,8 @@ class ParsedTransaction:
             'qty': str(self.quantity),
             'amount': str(self.net_amount),
             'currency': self.trade_currency,
-            'description': self.description
+            'description': self.description,
+            'commission': str(self.commission),
         }, sort_keys=True)
         return hashlib.sha256(key.encode()).hexdigest()
 

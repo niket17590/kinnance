@@ -277,9 +277,19 @@ def get_holdings(
             'total_unrealized_gl': round(
                 sum(s['unrealized_gl'] for s in result_open if s['unrealized_gl'] is not None), 2
             ) if any(s['unrealized_gl'] is not None for s in result_open) else None,
-            'total_realized_gl': round(
-                sum(s['realized_gl'] for s in result_open + result_closed), 2
-            ),
+            'total_unrealized_gl_pct': round(
+                sum(s['unrealized_gl'] for s in result_open if s['unrealized_gl'] is not None)
+                / sum(s['total_acb'] for s in result_open if s['total_acb']) * 100, 2
+            ) if any(s['unrealized_gl'] is not None for s in result_open)
+            and sum(s['total_acb'] for s in result_open if s['total_acb']) > 0 else None,
+                'total_daily_gl': round(
+            sum(float(s['day_change']) * s['quantity_total'] for s in result_open
+                if s['day_change'] is not None and s['quantity_total'] > 0), 2
+        ) if any(s['day_change'] is not None for s in result_open) else None,
+        'total_daily_gl_pct': round(
+            sum(float(s['day_change']) * s['quantity_total'] for s in result_open if s['day_change'] is not None and s['quantity_total'] > 0)
+            / (total_portfolio_mv - sum(float(s['day_change']) * s['quantity_total'] for s in result_open if s['day_change'] is not None and s['quantity_total'] > 0)) * 100, 2
+        ) if total_portfolio_mv and any(s['day_change'] is not None for s in result_open) else None,
             'has_prices': any(s['current_price'] is not None for s in result_open),
         }
     }

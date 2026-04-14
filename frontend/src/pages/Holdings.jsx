@@ -138,6 +138,9 @@ function BreakdownRow({ bd, currency, isLast }) {
         <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>—</span>
       </td>
 
+      {/* Invested — not shown at breakdown level */}
+      <td style={{ padding: '8px 16px' }} />
+
       {/* Market value */}
       <td style={{ padding: '8px 16px', textAlign: 'right' }}>
         <span style={{ fontSize: '12px', color: 'var(--text-primary)' }}>
@@ -237,9 +240,6 @@ function OpenRow({ position }) {
           <div style={{ fontSize: '13px', color: 'var(--text-primary)' }}>
             {fmtCurrency(position.acb_per_share, currency)}
           </div>
-          <div style={{ fontSize: '10px', color: 'var(--text-secondary)', marginTop: '1px' }}>
-            {fmtCurrency(position.total_acb, currency)} invested
-          </div>
         </td>
 
         {/* Current price */}
@@ -258,6 +258,13 @@ function OpenRow({ position }) {
           ) : (
             <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>—</span>
           )}
+        </td>
+
+        {/* Invested (Total ACB) */}
+        <td style={{ padding: '12px 16px', textAlign: 'right' }}>
+          <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
+            {fmtCurrency(position.total_acb, currency)}
+          </span>
         </td>
 
         {/* Market value */}
@@ -371,7 +378,7 @@ function ClosedRow({ position }) {
             Proceeds: {fmtCurrency(position.total_cost_sold, currency)}
           </span>
         </td>
-        <td colSpan={3} />
+        <td colSpan={4} />
         {/* Realized G/L */}
         <td style={{ padding: '10px 16px', textAlign: 'right' }}>
           <div style={{ fontSize: '13px', fontWeight: '700', color: gainColor(position.realized_gl) }}>
@@ -402,14 +409,15 @@ function ClosedRow({ position }) {
 
 function HoldingsTable({ positions, isOpen, sortKey, sortDir, onSort }) {
   const cols = [
-    { label: 'Symbol',         key: 'symbol',          align: 'left'  },
-    { label: 'Quantity',       key: 'quantity_total',   align: 'right' },
-    { label: 'Avg Cost (ACB)', key: 'acb_per_share',    align: 'right' },
-    { label: 'Price',          key: 'current_price',    align: 'right' },
-    { label: 'Market Value',   key: 'market_value',     align: 'right' },
-    { label: 'Unrealized G/L', key: 'unrealized_gl',    align: 'right' },
-    { label: 'Realized G/L',   key: 'realized_gl',      align: 'right' },
-    { label: 'Weight',         key: 'holding_pct',      align: 'right' },
+    { label: 'Symbol',       key: 'symbol',       align: 'left' },
+    { label: 'Quantity',     key: 'quantity_total', align: 'right' },
+    { label: 'ACB / Share',  key: 'acb_per_share', align: 'right' },
+    { label: 'Current Price',key: 'current_price', align: 'right' },
+    { label: 'Invested',     key: 'total_acb',     align: 'right' },
+    { label: 'Market Value', key: 'market_value',  align: 'right' },
+    { label: 'Unrealized G/L', key: 'unrealized_gl', align: 'right' },
+    { label: 'Realized G/L',   key: 'realized_gl',   align: 'right' },
+    { label: 'Weight',         key: 'holding_pct',   align: 'right' },
   ]
 
   return (
@@ -568,38 +576,58 @@ function Holdings() {
 
       {/* Summary bar */}
       {selectedCircle && data && openPositions.length > 0 && (
-        <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap', background: 'var(--card-bg)', border: '1px solid var(--card-border)', borderRadius: '12px', padding: '16px 20px', marginBottom: '16px', alignItems: 'center' }}>
-          <div>
-            <div style={{ fontSize: '10px', fontWeight: '700', textTransform: 'uppercase', color: 'var(--text-secondary)', letterSpacing: '0.05em' }}>Positions</div>
-            <div style={{ fontSize: '20px', fontWeight: '700', color: 'var(--text-primary)' }}>{openPositions.length}</div>
-          </div>
-          <div>
-            <div style={{ fontSize: '10px', fontWeight: '700', textTransform: 'uppercase', color: 'var(--text-secondary)', letterSpacing: '0.05em' }}>
-              {summary.total_market_value != null ? 'Market Value' : 'Invested (ACB)'}
-            </div>
-            <div style={{ fontSize: '20px', fontWeight: '700', color: 'var(--text-primary)' }}>
-              ${fmt(summary.total_market_value ?? summary.total_invested)}
-            </div>
-          </div>
-          {summary.total_unrealized_gl != null && (
-            <div>
-              <div style={{ fontSize: '10px', fontWeight: '700', textTransform: 'uppercase', color: 'var(--text-secondary)', letterSpacing: '0.05em' }}>Unrealized G/L</div>
-              <div style={{ fontSize: '20px', fontWeight: '700', color: gainColor(summary.total_unrealized_gl) }}>
-                {gainPrefix(summary.total_unrealized_gl)}${fmt(Math.abs(summary.total_unrealized_gl))}
+        <div style={{ display: 'flex', gap: '0', background: 'var(--card-bg)', border: '1px solid var(--card-border)', borderRadius: '12px', marginBottom: '16px', overflow: 'hidden' }}>
+          {[
+            {
+              label: 'Positions',
+              value: openPositions.length,
+              isCount: true,
+            },
+            {
+              label: 'Total Invested',
+              value: summary.total_invested != null ? `$${fmt(summary.total_invested)}` : '—',
+              sub: null,
+            },
+            {
+              label: summary.total_market_value != null ? 'Market Value' : 'Invested (ACB)',
+              value: `$${fmt(summary.total_market_value ?? summary.total_invested)}`,
+              sub: null,
+            },
+            ...(summary.total_unrealized_gl != null ? [{
+              label: 'Unrealized G/L',
+              value: `${gainPrefix(summary.total_unrealized_gl)}$${fmt(Math.abs(summary.total_unrealized_gl))}`,
+              sub: summary.total_unrealized_gl_pct != null ? `${gainPrefix(summary.total_unrealized_gl_pct)}${fmt(summary.total_unrealized_gl_pct)}%` : null,
+              gain: summary.total_unrealized_gl,
+            }] : []),
+            ...(summary.total_daily_gl != null ? [{
+              label: "Today's G/L",
+              value: `${gainPrefix(summary.total_daily_gl)}$${fmt(Math.abs(summary.total_daily_gl))}`,
+              sub: summary.total_daily_gl_pct != null ? `${gainPrefix(summary.total_daily_gl_pct)}${fmt(summary.total_daily_gl_pct)}%` : null,
+              gain: summary.total_daily_gl,
+            }] : []),
+          ].map((tile, i) => (
+            <div key={i} style={{
+              flex: 1,
+              padding: '14px 20px',
+              borderRight: '1px solid var(--card-border)',
+              borderRightWidth: i === 4 ? '0' : '1px',
+            }}>
+              <div style={{ fontSize: '10px', fontWeight: '700', textTransform: 'uppercase', color: 'var(--text-secondary)', letterSpacing: '0.05em', marginBottom: '4px' }}>
+                {tile.label}
               </div>
-            </div>
-          )}
-          {summary.total_realized_gl !== 0 && (
-            <div>
-              <div style={{ fontSize: '10px', fontWeight: '700', textTransform: 'uppercase', color: 'var(--text-secondary)', letterSpacing: '0.05em' }}>Realized G/L</div>
-              <div style={{ fontSize: '20px', fontWeight: '700', color: gainColor(summary.total_realized_gl) }}>
-                {gainPrefix(summary.total_realized_gl)}${fmt(Math.abs(summary.total_realized_gl))}
+              <div style={{ fontSize: '18px', fontWeight: '700', color: tile.gain != null ? gainColor(tile.gain) : 'var(--text-primary)', lineHeight: 1.2 }}>
+                {tile.isCount ? tile.value : tile.value}
               </div>
+              {tile.sub && (
+                <div style={{ fontSize: '11px', fontWeight: '600', color: gainColor(tile.gain), marginTop: '2px' }}>
+                  {tile.sub}
+                </div>
+              )}
             </div>
-          )}
+          ))}
           {!summary.has_prices && (
-            <div style={{ marginLeft: 'auto', fontSize: '12px', color: 'var(--text-secondary)' }}>
-              💡 Prices updating in background
+            <div style={{ display: 'flex', alignItems: 'center', padding: '14px 16px', fontSize: '11px', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>
+              💡 Prices updating
             </div>
           )}
         </div>

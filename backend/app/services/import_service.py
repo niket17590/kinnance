@@ -294,6 +294,48 @@ def import_transactions(
     batch_id = create_import_batch(db, owner_id, broker_code, filename)
 
     try:
+        # ── Resolve canonical symbols + convert pre-2025 WS CAD→USD ─
+        # For bare CAD-currency tickers:
+        #   - yfinance confirms US stock → keep original symbol, convert price to USD
+        #   - yfinance returns nothing  → Twelve Data finds Canadian listing → apply suffix
+        # This is WealthSimple-specific: pre-2025 US stocks were settled in CAD.
+        from decimal import Decimal
+        from app.services.price_service import (
+            resolve_canonical_symbol, _is_canadian, get_historical_price_usd
+        )
+        for txn in parse_result.transactions:
+            if not txn.symbol_normalized or txn.trade_currency != 'CAD':
+                continue
+            if _is_canadian(txn.symbol_normalized):
+                continue
+
+            canonical = resolve_canonical_symbol(db, txn.symbol_normalized, 'CAD')
+
+            if canonical != txn.symbol_normalized:
+                # Genuinely Canadian stock — apply resolved suffix
+                logger.info(f"Symbol resolved: {txn.symbol_normalized} → {canonical}")
+                txn.symbol_normalized = canonical
+            else:
+                # US stock confirmed by yfinance — convert pre-2025 CAD prices to USD
+                if (broker_code == 'WEALTHSIMPLE'
+                        and txn.transaction_type in ('BUY', 'SELL')
+                        and txn.trade_date
+                        and txn.trade_date.year < 2025):
+                    usd_price = get_historical_price_usd(txn.symbol_normalized, txn.trade_date)
+                    if usd_price:
+                        qty = txn.quantity or Decimal('1')
+                        sign = Decimal('-1') if txn.transaction_type == 'BUY' else Decimal('1')
+                        txn.price_per_unit  = Decimal(str(round(usd_price, 6)))
+                        txn.net_amount      = sign * Decimal(str(round(usd_price, 6))) * qty
+                        txn.gross_amount    = txn.net_amount
+                        txn.net_amount_cad  = Decimal('0')
+                        txn.trade_currency  = 'USD'
+                        logger.info(
+                            f"CAD→USD conversion: {txn.symbol_normalized} "
+                            f"{txn.trade_date} qty={qty} "
+                            f"price={usd_price:.4f} USD"
+                        )
+                    
         # ── Build account mapping ─────────────────────────────
         account_mapping = {}
 

@@ -151,19 +151,34 @@ def remove_from_queue(symbol: str):
 
 def resolve_canonical_symbol(db: Session, symbol: str, currency: str) -> str:
     """
-    For a bare symbol with CAD currency:
-    1. Check symbol_aliases table first
-    2. If not found, call Twelve Data /symbol_search with demo key
-    3. Find first Canadian result, map exchange to yfinance suffix
-    4. Store in symbol_aliases for future use
-    Returns canonical symbol (e.g. QESS.CN) or original if not resolved.
+    For a bare symbol with CAD currency, resolve to canonical exchange-suffixed form.
+
+    Resolution order:
+    1. Already has Canadian suffix → return as-is
+    2. Try yfinance — if valid US-listed stock found (currency=USD) → return original (no suffix)
+    3. Check symbol_aliases table
+    4. Call Twelve Data /symbol_search → find first Canadian result → store alias → return
+
+    Returns canonical symbol (e.g. QESS.CN) or original symbol if US stock or unresolvable.
     """
     if currency != 'CAD':
         return symbol
     if _is_canadian(symbol):
-        return symbol  # already has suffix
+        return symbol
 
-    # Check alias table first
+    # Step 1 — try yfinance: if it's a valid US stock, don't add Canadian suffix
+    try:
+        ticker = yf.Ticker(symbol)
+        info = ticker.info or {}
+        yf_currency = (info.get("currency") or "").upper()
+        yf_name = info.get("longName") or info.get("shortName") or ""
+        if yf_name and yf_currency == "USD":
+            logger.info(f"Symbol {symbol} confirmed as US stock via yfinance — no suffix applied")
+            return symbol
+    except Exception as e:
+        logger.debug(f"yfinance lookup failed for {symbol}: {e}")
+
+    # Step 2 — check alias table
     row = db.execute(
         text("SELECT canonical_symbol FROM symbol_aliases WHERE bare_symbol = :sym"),
         {"sym": symbol.upper()}
@@ -172,7 +187,7 @@ def resolve_canonical_symbol(db: Session, symbol: str, currency: str) -> str:
         logger.info(f"Symbol alias found: {symbol} → {row.canonical_symbol}")
         return row.canonical_symbol
 
-    # Call Twelve Data symbol_search with demo key (always free)
+    # Step 3 — call Twelve Data symbol_search (demo key, always free)
     try:
         with httpx.Client(timeout=10) as client:
             response = client.get(
@@ -183,7 +198,6 @@ def resolve_canonical_symbol(db: Session, symbol: str, currency: str) -> str:
             data = response.json()
 
         entries = data.get("data", [])
-        # Find first Canadian result
         canadian = next(
             (e for e in entries
              if e.get("country") == "Canada"
@@ -196,7 +210,6 @@ def resolve_canonical_symbol(db: Session, symbol: str, currency: str) -> str:
             suffix = EXCHANGE_TO_SUFFIX.get(exchange)
             if suffix:
                 canonical = f"{symbol.upper()}{suffix}"
-                # Store alias for future imports
                 try:
                     db.execute(
                         text("""
@@ -217,6 +230,44 @@ def resolve_canonical_symbol(db: Session, symbol: str, currency: str) -> str:
 
     logger.warning(f"Could not resolve canonical symbol for {symbol} (CAD) — using as-is")
     return symbol
+
+
+def get_historical_price_usd(symbol: str, trade_date) -> float | None:
+    """
+    Fetch the closing price in USD for a symbol on a specific date via yfinance.
+    Used to convert pre-2025 WealthSimple CAD-settled USD stock transactions.
+    Returns None if price cannot be fetched.
+    """
+    import datetime
+    try:
+        if isinstance(trade_date, str):
+            trade_date = datetime.date.fromisoformat(trade_date)
+
+        # Fetch a 5-day window around the trade date to handle weekends/holidays
+        start = trade_date - datetime.timedelta(days=4)
+        end = trade_date + datetime.timedelta(days=1)
+
+        ticker = yf.Ticker(symbol)
+        hist = ticker.history(start=start.isoformat(), end=end.isoformat())
+
+        if hist.empty:
+            logger.warning(f"yfinance: no historical price for {symbol} around {trade_date}")
+            return None
+
+        # Use the closest date on or before the trade date
+        hist.index = hist.index.date
+        available = [d for d in hist.index if d <= trade_date]
+        if not available:
+            available = list(hist.index)  # fallback: take nearest available
+
+        closest = max(available)
+        price = float(hist.loc[closest, "Close"])
+        logger.info(f"Historical price for {symbol} on {trade_date} (using {closest}): {price} USD")
+        return price
+
+    except Exception as e:
+        logger.warning(f"Failed to fetch historical price for {symbol} on {trade_date}: {e}")
+        return None
 
 
 # ============================================================

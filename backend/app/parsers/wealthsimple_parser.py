@@ -250,7 +250,18 @@ class WealthSimpleParser(BaseParser):
                         )
                         ca_buffer[ca_key] = buffered
                     continue
+                
+                # Skip InternalSecurityTransfer — WS-specific sub-account stock moves.
+                # Both legs (debit + credit) map to the same Kinnance account,
+                # so quantities and cash net to zero. No ACB or cash balance impact.
+                if activity_type == "InternalSecurityTransfer":
+                    self.log_skip(row_num, f"InternalSecurityTransfer skipped: {symbol_norm}")
+                    continue
 
+                # Skip OPTION asset types — handled separately in future
+                if detect_asset_type(symbol_norm) == 'OPTION':
+                    self.log_skip(row_num, f"Option trade skipped: {symbol_norm}")
+                    continue
                 # Regular transaction
                 # For USD transactions, net_amount_cad will be set later
                 # when we have the FX rate from price cache
