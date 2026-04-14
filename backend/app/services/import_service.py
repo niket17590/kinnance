@@ -319,8 +319,7 @@ def import_transactions(
                 # US stock confirmed by yfinance — convert pre-2025 CAD prices to USD
                 if (broker_code == 'WEALTHSIMPLE'
                         and txn.transaction_type in ('BUY', 'SELL')
-                        and txn.trade_date
-                        and txn.trade_date.year < 2025):
+                        and txn.trade_date):
                     usd_price = get_historical_price_usd(txn.symbol_normalized, txn.trade_date)
                     if usd_price:
                         qty = txn.quantity or Decimal('1')
