@@ -24,6 +24,7 @@ from app.api import admin
 from app.api import capital_gains
 from app.api import rebalancer
 from app.api import optimizer
+from app.api import dashboard, performance
 
 settings = get_settings()
 
@@ -127,3 +128,5 @@ app.include_router(admin.router, prefix="/api/v1")
 app.include_router(capital_gains.router, prefix="/api/v1")
 app.include_router(rebalancer.router, prefix="/api/v1")
 app.include_router(optimizer.router, prefix="/api/v1")
+app.include_router(dashboard.router, prefix="/api/v1")
+app.include_router(performance.router, prefix="/api/v1")
