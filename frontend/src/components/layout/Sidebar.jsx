@@ -149,6 +149,40 @@ const navItems = [
           </svg>
         ),
       },
+      {
+        path: "/optimizer",
+        label: "Optimizer",
+        icon: (
+          <svg viewBox="0 0 18 18" fill="none" width="18" height="18">
+            <path
+              d="M2 6h6M2 12h6"
+              stroke="currentColor"
+              strokeWidth="1.3"
+              strokeLinecap="round"
+            />
+            <path
+              d="M10 6h6M10 12h6"
+              stroke="currentColor"
+              strokeWidth="1.3"
+              strokeLinecap="round"
+            />
+            <path
+              d="M8 4l-2 2 2 2"
+              stroke="currentColor"
+              strokeWidth="1.3"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+            <path
+              d="M10 10l2 2-2 2"
+              stroke="currentColor"
+              strokeWidth="1.3"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        ),
+      },
     ],
   },
   {

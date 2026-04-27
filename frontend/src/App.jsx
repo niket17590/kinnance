@@ -21,6 +21,7 @@ import PortfolioTools from "./pages/admin/PortfolioTools";
 import Rebalancer from "./pages/Rebalancer";
 import { RefreshProvider } from "./context/RefreshContext";
 import { FilterProvider } from "./context/FilterContext";
+import Optimizer from './pages/Optimizer'
 
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth();
@@ -91,6 +92,7 @@ function App() {
         <Route path="contribution-limits" element={<ContributionLimits />} />
         <Route path="/admin/portfolio-tools" element={<PortfolioTools />} />
         <Route path="rebalancer" element={<Rebalancer />} />
+        <Route path="optimizer" element={<Optimizer />} />
       </Route>
     </Routes>
   );

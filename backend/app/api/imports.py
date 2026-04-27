@@ -157,7 +157,7 @@ async def do_import(
             detail="File too large — maximum 10MB",
         )
 
-    result = import_service.run_import(
+    result = import_service.import_transactions(
         db=db,
         owner_id=UUID(str(current_user.id)),
         broker_code=broker_code,
@@ -226,8 +226,12 @@ def delete_import_batch(
     db.execute(text("DELETE FROM import_batches WHERE id = :id"), {"id": batch_id})
     db.commit()
 
-    from app.services.acb_service import recalculate_portfolio
+    from app.services.acb_service import (
+        recalculate_holdings_for_accounts,
+        recalculate_realized_gains,
+    )
 
+    recalculate_holdings_for_accounts(db, affected_ids)
     affected_member_rows = db.execute(
         text(
             "SELECT DISTINCT member_id FROM member_accounts WHERE id = ANY(CAST(:ids AS uuid[]))"
@@ -235,17 +239,6 @@ def delete_import_batch(
         {"ids": affected_ids},
     ).fetchall()
     affected_member_ids = [str(r.member_id) for r in affected_member_rows]
-
-    circle_rows = db.execute(
-        text("""
-            SELECT DISTINCT ca.circle_id
-            FROM circle_accounts ca
-            WHERE ca.account_id = ANY(CAST(:ids AS uuid[]))
-        """),
-        {"ids": affected_ids},
-    ).fetchall()
-    affected_circle_ids = [str(r.circle_id) for r in circle_rows]
-
-    recalculate_portfolio(db, affected_ids, affected_member_ids, affected_circle_ids)
+    recalculate_realized_gains(db, affected_ids, affected_member_ids)
 
     return {"message": "Import batch deleted and holdings recalculated"}
