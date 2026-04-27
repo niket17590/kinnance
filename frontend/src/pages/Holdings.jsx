@@ -463,7 +463,7 @@ function sortPositions(positions, key, dir) {
 }
 
 function Holdings() {
-  const { activeFilters, selectedCircle } = useFilters()
+  const { debouncedFilters, selectedCircle } = useFilters()
   const { refreshNow, isRefreshing } = useRefresh()
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(false)
@@ -478,10 +478,10 @@ function Holdings() {
     setError('')
     try {
       const params = {}
-      if (activeFilters.circleId) params.circle_id = activeFilters.circleId
-      if (activeFilters.memberIds?.length) params.member_ids = activeFilters.memberIds.join(',')
-      if (activeFilters.accountTypes?.length) params.account_types = activeFilters.accountTypes.join(',')
-      if (activeFilters.brokers?.length) params.brokers = activeFilters.brokers.join(',')
+      if (debouncedFilters.circleId) params.circle_id = debouncedFilters.circleId
+      if (debouncedFilters.memberIds?.length) params.member_ids = debouncedFilters.memberIds.join(',')
+      if (debouncedFilters.accountTypes?.length) params.account_types = debouncedFilters.accountTypes.join(',')
+      if (debouncedFilters.brokers?.length) params.brokers = debouncedFilters.brokers.join(',')
       const res = await api.get('/holdings', { params })
       setData(res.data)
     } catch {
@@ -489,10 +489,10 @@ function Holdings() {
     } finally {
       setLoading(false)
     }
-  }, [activeFilters, selectedCircle])
+  }, [debouncedFilters, selectedCircle])
 
-  // Stable string key — only changes when filter values actually change
-  const filterKey = JSON.stringify(activeFilters)
+  // Stable string key — only changes when debounced filter values actually change
+  const filterKey = JSON.stringify(debouncedFilters)
 
   // Fetch when filters change
   // eslint-disable-next-line react-hooks/exhaustive-deps

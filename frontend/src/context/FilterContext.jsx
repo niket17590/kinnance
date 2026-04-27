@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState } from 'react'
+import { createContext, useContext, useEffect, useRef, useState } from 'react'
 import { circlesApi } from '../services/api'
 
 const FilterContext = createContext(null)
@@ -179,13 +179,38 @@ const loadCircles = () => {
     )
   }
 
-  // Computed filter object — pages use this to filter their API calls
+  // Computed filter object — reflects current UI state immediately
   const activeFilters = {
     circleId: selectedCircle?.id || null,
-    memberIds: selectedMembers,       // empty = all
-    accountTypes: selectedAccountTypes, // empty = all
-    brokers: selectedBrokers            // empty = all
+    memberIds: selectedMembers,
+    accountTypes: selectedAccountTypes,
+    brokers: selectedBrokers,
   }
+
+  // Debounced filters — used by pages for API calls.
+  // Circle changes are applied immediately; multi-select toggles
+  // are debounced 300ms so rapid clicks don't fire multiple requests.
+  const [debouncedFilters, setDebouncedFilters] = useState(activeFilters)
+  const debounceTimer = useRef(null)
+
+  useEffect(() => {
+    clearTimeout(debounceTimer.current)
+    debounceTimer.current = setTimeout(() => {
+      setDebouncedFilters({
+        circleId: selectedCircle?.id || null,
+        memberIds: selectedMembers,
+        accountTypes: selectedAccountTypes,
+        brokers: selectedBrokers,
+      })
+    }, 300)
+    return () => clearTimeout(debounceTimer.current)
+  }, [selectedMembers, selectedAccountTypes, selectedBrokers])
+
+  // Circle changes bypass the debounce
+  useEffect(() => {
+    clearTimeout(debounceTimer.current)
+    setDebouncedFilters(prev => ({ ...prev, circleId: selectedCircle?.id || null }))
+  }, [selectedCircle])
 
   return (
     <FilterContext.Provider value={{
@@ -217,7 +242,8 @@ const loadCircles = () => {
       refreshFilterOptions,
 
       // Computed
-      activeFilters
+      activeFilters,
+      debouncedFilters,
     }}>
       {children}
     </FilterContext.Provider>

@@ -41,7 +41,9 @@ def get_dashboard(
             h.day_change, h.day_change_pct,
             at.tax_category,
             ma.account_type_code,
-            m.display_name AS member_name
+            m.id AS member_id,
+            m.display_name AS member_name,
+            m.member_type
         FROM holdings h
         JOIN member_accounts ma ON h.account_id = ma.id
         JOIN members m          ON ma.member_id  = m.id
@@ -66,8 +68,9 @@ def get_dashboard(
         for r in holdings_rows
         if r.day_change is not None and r.quantity_total
     ) if has_prices else None
-    total_daily_gl_pct = (total_daily_gl / (total_mv - total_daily_gl) * 100) \
-        if total_daily_gl is not None and total_mv > 0 else None
+    _daily_prev_mv = total_mv - total_daily_gl if total_daily_gl is not None else None
+    total_daily_gl_pct = (total_daily_gl / _daily_prev_mv * 100) \
+        if total_daily_gl is not None and _daily_prev_mv and _daily_prev_mv != 0 else None
 
     # Top holdings (up to 10 by MV)
     top_holdings = []
@@ -180,37 +183,39 @@ def get_dashboard(
             "market_value":      round(float(r.market_value or 0), 2),
         }
 
-    # ── 6. Member breakdown ──────────────────────────────────
-    member_rows = db.execute(text("""
-        SELECT
-            m.id, m.display_name, m.member_type,
-            COUNT(DISTINCT h.symbol) AS positions,
-            SUM(h.market_value)      AS market_value,
-            SUM(h.total_acb)         AS total_acb,
-            SUM(h.unrealized_gain_loss) AS unrealized_gl
-        FROM holdings h
-        JOIN member_accounts ma ON h.account_id = ma.id
-        JOIN members m          ON ma.member_id  = m.id
-        JOIN circle_accounts ca ON ca.account_id = ma.id
-        WHERE ca.circle_id = :cid AND m.owner_id = :oid
-          AND h.is_position_open = TRUE AND h.quantity_total > 0
-        GROUP BY m.id, m.display_name, m.member_type
-        ORDER BY SUM(h.market_value) DESC NULLS LAST
-    """), {"cid": circle_id, "oid": owner_id}).fetchall()
+    # ── 6. Member breakdown — derived from holdings_rows (no extra query) ──
+    _member_map: dict[str, dict] = {}
+    for r in holdings_rows:
+        mid = str(r.member_id)
+        if mid not in _member_map:
+            _member_map[mid] = {
+                "member_id":   mid,
+                "member_name": r.member_name,
+                "member_type": r.member_type,
+                "symbols":     set(),
+                "market_value": 0.0,
+                "total_acb":   0.0,
+                "unrealized_gl": 0.0,
+            }
+        m = _member_map[mid]
+        m["symbols"].add(r.symbol)
+        m["market_value"]  += float(r.market_value or 0)
+        m["total_acb"]     += float(r.total_acb or 0)
+        m["unrealized_gl"] += float(r.unrealized_gain_loss or 0)
 
-    member_breakdown = [
+    member_breakdown = sorted([
         {
-            "member_id":   str(r.id),
-            "member_name": r.display_name,
-            "member_type": r.member_type,
-            "positions":   r.positions,
-            "market_value": round(float(r.market_value or 0), 2),
-            "total_acb":   round(float(r.total_acb or 0), 2),
-            "unrealized_gl": round(float(r.unrealized_gl or 0), 2),
-            "weight_pct":  round(float(r.market_value or 0) / total_mv * 100, 2) if total_mv > 0 else 0,
+            "member_id":    m["member_id"],
+            "member_name":  m["member_name"],
+            "member_type":  m["member_type"],
+            "positions":    len(m["symbols"]),
+            "market_value": round(m["market_value"], 2),
+            "total_acb":    round(m["total_acb"], 2),
+            "unrealized_gl": round(m["unrealized_gl"], 2),
+            "weight_pct":   round(m["market_value"] / total_mv * 100, 2) if total_mv > 0 else 0,
         }
-        for r in member_rows
-    ]
+        for m in _member_map.values()
+    ], key=lambda x: -x["market_value"])
 
     return {
         "circle_id":   circle_id,

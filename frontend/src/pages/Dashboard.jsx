@@ -194,7 +194,7 @@ function HoldingBar({ h, totalMv, rank }) {
           {glPrefix(h.unrealized_gl)}{fmtC(h.unrealized_gl, true)}
         </div>
         <div style={{ fontSize: '10px', color: glColor(h.unrealized_gl) }}>
-          {glPrefix(h.unrealized_gl_pct)}{fmt(Math.abs(h.unrealized_gl_pct))}%
+          {h.unrealized_gl_pct != null ? `${glPrefix(h.unrealized_gl_pct)}${fmt(Math.abs(h.unrealized_gl_pct))}%` : '—'}
         </div>
       </div>
     </div>
@@ -273,7 +273,7 @@ function GainPill({ p, isWinner }) {
           {glPrefix(p.unrealized_gl)}{fmtC(p.unrealized_gl, true)}
         </div>
         <div style={{ fontSize: '10px', color: glColor(p.unrealized_gl_pct) }}>
-          {glPrefix(p.unrealized_gl_pct)}{fmt(Math.abs(p.unrealized_gl_pct))}%
+          {p.unrealized_gl_pct != null ? `${glPrefix(p.unrealized_gl_pct)}${fmt(Math.abs(p.unrealized_gl_pct))}%` : '—'}
         </div>
       </div>
     </div>

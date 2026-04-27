@@ -36,8 +36,11 @@ const SORT_OPTIONS = [
 
 function sortPositions(positions, key, dir) {
   return [...positions].sort((a, b) => {
-    const av = a[key] ?? 0
-    const bv = b[key] ?? 0
+    const av = a[key]
+    const bv = b[key]
+    if (av == null && bv == null) return 0
+    if (av == null) return 1
+    if (bv == null) return -1
     return dir === 'asc' ? av - bv : bv - av
   })
 }
@@ -173,7 +176,7 @@ const CustomTooltip = ({ active, payload, label }) => {
 // ── Main page ─────────────────────────────────────────────────
 
 export default function Performance() {
-  const { selectedCircle, activeFilters } = useFilters()
+  const { selectedCircle, debouncedFilters } = useFilters()
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -186,9 +189,9 @@ export default function Performance() {
     setLoading(true); setError('')
     try {
       const params = { circle_id: selectedCircle.id }
-      if (activeFilters.memberIds?.length) params.member_ids = activeFilters.memberIds.join(',')
-      if (activeFilters.accountTypes?.length) params.account_types = activeFilters.accountTypes.join(',')
-      if (activeFilters.brokers?.length) params.brokers = activeFilters.brokers.join(',')
+      if (debouncedFilters.memberIds?.length) params.member_ids = debouncedFilters.memberIds.join(',')
+      if (debouncedFilters.accountTypes?.length) params.account_types = debouncedFilters.accountTypes.join(',')
+      if (debouncedFilters.brokers?.length) params.brokers = debouncedFilters.brokers.join(',')
       const res = await api.get('/performance', { params })
       setData(res.data)
     } catch (err) {
@@ -196,7 +199,7 @@ export default function Performance() {
     } finally {
       setLoading(false)
     }
-  }, [selectedCircle, activeFilters])
+  }, [selectedCircle, debouncedFilters])
 
   useEffect(() => { fetchPerformance() }, [fetchPerformance])
 

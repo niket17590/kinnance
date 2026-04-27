@@ -165,7 +165,7 @@ def upsert_target(
         text("""
             SELECT COALESCE(SUM(target_weight_pct), 0) as total
             FROM rebalancer_targets
-            WHERE circle_id = :circle_id AND symbol != :symbol
+            WHERE circle_id = :circle_id AND UPPER(symbol) != UPPER(:symbol)
         """),
         {"circle_id": circle_id, "symbol": symbol.upper()}
     ).fetchone()
