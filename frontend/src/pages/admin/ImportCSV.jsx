@@ -50,6 +50,32 @@ function StepIndicator({ step }) {
   )
 }
 
+// ── Recalc status badge ───────────────────────────────────────
+
+function RecalcBadge({ status }) {
+  if (!status) return null
+  const map = {
+    PENDING:    { bg: '#FEF3C7', color: '#92400E', icon: '⏳', label: 'Recalculating holdings…' },
+    PROCESSING: { bg: '#DBEAFE', color: '#1D4ED8', icon: '⚙️', label: 'Recalculating holdings…' },
+    COMPLETE:   { bg: '#DCFCE7', color: '#14532D', icon: '✓',  label: 'Holdings updated' },
+    FAILED:     { bg: '#FEE2E2', color: '#DC2626', icon: '⚠',  label: 'Recalculation failed — check logs' },
+  }
+  const m = map[status] || map.PENDING
+  return (
+    <div style={{
+      display: 'inline-flex', alignItems: 'center', gap: '5px',
+      fontSize: '11px', fontWeight: '700', padding: '4px 10px',
+      borderRadius: '20px', background: m.bg, color: m.color,
+    }}>
+      <span>{m.icon}</span>
+      <span>{m.label}</span>
+      {(status === 'PENDING' || status === 'PROCESSING') && (
+        <span style={{ animation: 'spin 1s linear infinite', display: 'inline-block' }}>↻</span>
+      )}
+    </div>
+  )
+}
+
 function ImportCSV() {
   const [step, setStep] = useState(1)
   const [members, setMembers] = useState([])
@@ -65,7 +91,9 @@ function ImportCSV() {
   const [availableAccounts, setAvailableAccounts] = useState([])
   const [mappings, setMappings] = useState({})
   const [importResult, setImportResult] = useState(null)
+  const [recalcStatus, setRecalcStatus] = useState(null)
   const fileInputRef = useRef(null)
+  const pollRef = useRef(null)
   const broker = SUPPORTED_BROKERS.find(b => b.code === selectedBroker)
 
   useEffect(() => {
@@ -78,6 +106,32 @@ function ImportCSV() {
       .then(res => setMemberAccounts(res.data.filter(a => a.broker_code === selectedBroker)))
       .catch(() => {})
   }, [selectedMember, selectedBroker])
+
+  // Poll recalc_status after import until COMPLETE or FAILED
+  useEffect(() => {
+    if (!importResult?.batch_id) return
+
+    setRecalcStatus('PENDING')
+    let attempts = 0
+    const MAX_ATTEMPTS = 60 // 60 × 3s = 3 min max
+
+    const poll = async () => {
+      try {
+        const res = await api.get(`/imports/batches/${importResult.batch_id}/recalc-status`)
+        const s = res.data.recalc_status
+        setRecalcStatus(s)
+        if (s !== 'COMPLETE' && s !== 'FAILED' && attempts < MAX_ATTEMPTS) {
+          attempts++
+          pollRef.current = setTimeout(poll, 3000)
+        }
+      } catch {
+        // silent — don't break UI if poll fails
+      }
+    }
+
+    pollRef.current = setTimeout(poll, 2000)
+    return () => clearTimeout(pollRef.current)
+  }, [importResult?.batch_id])
 
   const handleFileSelect = (selectedFile) => {
     if (!selectedFile) return
@@ -105,10 +159,7 @@ function ImportCSV() {
       if (result.status === 'NEEDS_MAPPING') {
         const suggestions = result.account_number_suggestions || {}
         const initMappings = {}
-        result.unmatched_accounts.forEach(id => {
-          // Pre-fill with account number match if found
-          initMappings[id] = suggestions[id] || ''
-        })
+        result.unmatched_accounts.forEach(id => { initMappings[id] = suggestions[id] || '' })
         setMappings(initMappings)
         setUnmatchedAccounts(result.unmatched_accounts)
         setAvailableAccounts(result.available_accounts)
@@ -144,17 +195,23 @@ function ImportCSV() {
       formData.append('confirmed_mappings', JSON.stringify(confirmedMappings))
       formData.append('skipped_accounts', JSON.stringify(skippedAccounts))
       const res = await api.post('/imports/import', formData, { headers: { 'Content-Type': 'multipart/form-data' } })
-      if (res.data.status === 'COMPLETE') { setImportResult(res.data); setUnmatchedAccounts([]) }
-      else setError(res.data.errors?.join(', ') || 'Import failed')
+      if (res.data.status === 'COMPLETE') {
+        setImportResult(res.data)
+        setUnmatchedAccounts([])
+      } else {
+        setError(res.data.errors?.join(', ') || 'Import failed')
+      }
     } catch (err) {
       setError(err.response?.data?.detail || 'Import failed')
     } finally { setLoading(false) }
   }
 
   const handleReset = () => {
+    clearTimeout(pollRef.current)
     setStep(1); setSelectedMember(''); setSelectedBroker(''); setFile(null)
     setError(''); setParseResult(null); setUnmatchedAccounts([])
     setAvailableAccounts([]); setMappings({}); setImportResult(null)
+    setRecalcStatus(null)
   }
 
   const inputStyle = {
@@ -322,7 +379,12 @@ function ImportCSV() {
             {importResult && (
               <>
                 <div style={{ background: '#DCFCE7', border: '1px solid #BBF7D0', borderRadius: '10px', padding: '16px 20px', marginBottom: '20px' }}>
-                  <div style={{ fontSize: '15px', fontWeight: '700', color: '#14532D', marginBottom: '12px' }}>✅ Import complete</div>
+                  {/* Header row */}
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px' }}>
+                    <div style={{ fontSize: '15px', fontWeight: '700', color: '#14532D' }}>✅ Transactions saved</div>
+                    <RecalcBadge status={recalcStatus} />
+                  </div>
+
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px' }}>
                     {[
                       ['Total', importResult.total_transactions ?? 0, '#1D4ED8'],
@@ -337,7 +399,15 @@ function ImportCSV() {
                       </div>
                     ))}
                   </div>
+
+                  {/* Recalc in-progress note */}
+                  {recalcStatus && recalcStatus !== 'COMPLETE' && recalcStatus !== 'FAILED' && (
+                    <div style={{ marginTop: '12px', fontSize: '12px', color: '#14532D', borderTop: '1px solid #BBF7D0', paddingTop: '10px' }}>
+                      Holdings and performance pages will reflect the new data once recalculation completes. You can navigate away — it runs in the background.
+                    </div>
+                  )}
                 </div>
+
                 {importResult.parse_errors?.length > 0 && (
                   <div style={{ background: '#FEF3C7', border: '1px solid #FDE68A', borderRadius: '8px', padding: '12px 16px', marginBottom: '16px' }}>
                     <div style={{ fontSize: '12px', fontWeight: '600', color: '#92400E', marginBottom: '6px' }}>Parse warnings ({importResult.parse_errors.length})</div>
@@ -357,21 +427,15 @@ function ImportCSV() {
                   <div style={{ background: 'var(--content-bg)', border: '1px solid var(--card-border)', borderRadius: '10px', padding: '14px 16px', marginBottom: '16px', display: 'flex', gap: '24px' }}>
                     <div>
                       <div style={{ fontSize: '10px', fontWeight: '700', textTransform: 'uppercase', color: 'var(--text-secondary)' }}>Total transactions</div>
-                      <div style={{ fontSize: '20px', fontWeight: '700', color: 'var(--text-primary)' }}>{parseResult.total_transactions}</div>
+                      <div style={{ fontSize: '20px', fontWeight: '700', color: 'var(--text-primary)' }}>{parseResult.transactions_found}</div>
                     </div>
-                    {parseResult.date_from && (
-                      <div>
-                        <div style={{ fontSize: '10px', fontWeight: '700', textTransform: 'uppercase', color: 'var(--text-secondary)' }}>Date range</div>
-                        <div style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-primary)' }}>{parseResult.date_from} → {parseResult.date_to}</div>
-                      </div>
-                    )}
                   </div>
                 )}
 
                 <div style={{ background: '#FEF3C7', border: '1px solid #FDE68A', borderRadius: '10px', padding: '14px 16px', marginBottom: '20px' }}>
                   <div style={{ fontSize: '13px', fontWeight: '600', color: '#92400E' }}>⚠️ Some accounts need to be matched</div>
                   <div style={{ fontSize: '12px', color: '#92400E', marginTop: '4px' }}>
-                    This only happens once — we'll remember your choice next time. For WealthSimple, map both CAD and USD sub-accounts to the same Kinnance account.
+                    This only happens once — we'll remember your choice next time.
                   </div>
                 </div>
 
@@ -405,12 +469,16 @@ function ImportCSV() {
 
             {loading && !importResult && unmatchedAccounts.length === 0 && (
               <div style={{ textAlign: 'center', padding: '32px', color: 'var(--text-secondary)' }}>
-                Importing transactions...
+                Saving transactions…
               </div>
             )}
           </div>
         )}
       </div>
+
+      <style>{`
+        @keyframes spin { to { transform: rotate(360deg); } }
+      `}</style>
     </div>
   )
 }

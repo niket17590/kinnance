@@ -223,6 +223,8 @@ export default function Rebalancer() {
   const [newInvestment, setNewInvestment] = useState('')
   const [sortKey, setSortKey] = useState('market_value')
   const [sortDir, setSortDir] = useState('desc')
+  const [customMode, setCustomMode] = useState(false)
+  const [selectedSymbols, setSelectedSymbols] = useState(new Set())
 
   const fetchData = useCallback(async () => {
     if (!selectedCircle) { setData(null); return }
@@ -257,19 +259,76 @@ export default function Rebalancer() {
 
   const extraCash = parseFloat(newInvestment) || 0
   const totalMv = data?.total_market_value || 0
-  const grandTotal = totalMv + extraCash
-  const totalTargetWeight = Object.values(targets).reduce((s, v) => s + (v || 0), 0)
+
+  // In custom mode, grandTotal is only the selected symbols' MV + new investment
+  // In default mode, it's the full portfolio MV + new investment
+  const allApiPositions = data?.positions || []
+  const activeSymbols = customMode && selectedSymbols.size > 0
+    ? new Set(selectedSymbols)
+    : null // null = all
+
+  const subsetMv = activeSymbols
+    ? allApiPositions.filter(p => activeSymbols.has(p.symbol))
+        .reduce((s, p) => s + (p.market_value ?? 0), 0)
+    : totalMv
+  const grandTotal = subsetMv + extraCash
+
+  // Target weight validation is only against selected subset in custom mode
+  const relevantTargets = activeSymbols
+    ? Object.fromEntries(Object.entries(targets).filter(([sym]) => activeSymbols.has(sym)))
+    : targets
+  const totalTargetWeight = Object.values(relevantTargets).reduce((s, v) => s + (v || 0), 0)
   const isOverweight = totalTargetWeight > 100
 
-  const rawPositions = (data?.positions || []).map(p => {
+  const rawPositions = allApiPositions.map(p => {
+    const inSubset = !activeSymbols || activeSymbols.has(p.symbol)
     const target = targets[p.symbol] ?? 0
-    const targetValue = (target / 100) * grandTotal
-    const diff = targetValue - (p.market_value ?? 0)
+    // current_weight_pct recalculated against subset denominator
+    const currentWeightPct = inSubset && subsetMv > 0
+      ? (p.market_value ?? 0) / subsetMv * 100
+      : null
+    const targetValue = inSubset ? (target / 100) * grandTotal : null
+    const diff = inSubset && targetValue != null ? targetValue - (p.market_value ?? 0) : null
     const acbPerShare = p.quantity_total > 0 ? (p.total_acb / p.quantity_total) : null
-    return { ...p, target_weight_pct: target, target_value: targetValue, diff, acbPerShare }
+    return {
+      ...p,
+      current_weight_pct: currentWeightPct,
+      target_weight_pct: target,
+      target_value: targetValue,
+      diff,
+      acbPerShare,
+      inSubset,
+    }
   })
 
   const positions = sortPositions(rawPositions, sortKey, sortDir)
+
+  const toggleSymbol = (symbol) => {
+    setSelectedSymbols(prev => {
+      const next = new Set(prev)
+      next.has(symbol) ? next.delete(symbol) : next.add(symbol)
+      return next
+    })
+  }
+
+  const toggleAllSymbols = () => {
+    if (selectedSymbols.size === allApiPositions.length) {
+      setSelectedSymbols(new Set())
+    } else {
+      setSelectedSymbols(new Set(allApiPositions.map(p => p.symbol)))
+    }
+  }
+
+  const enterCustomMode = () => {
+    // Pre-select all by default when entering custom mode
+    setSelectedSymbols(new Set(allApiPositions.map(p => p.symbol)))
+    setCustomMode(true)
+  }
+
+  const exitCustomMode = () => {
+    setCustomMode(false)
+    setSelectedSymbols(new Set())
+  }
 
   const thProps = { currentKey: sortKey, currentDir: sortDir, onSort: handleSort }
 
@@ -331,14 +390,21 @@ export default function Rebalancer() {
           {/* Portfolio value */}
           <div style={{ flex: 1, padding: '16px 20px', borderRight: '1px solid var(--card-border)' }}>
             <div style={{ fontSize: '10px', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-secondary)', marginBottom: '4px' }}>
-              Portfolio Value
+              {customMode && selectedSymbols.size > 0 ? 'Subset Value' : 'Portfolio Value'}
             </div>
             <div style={{ fontSize: '22px', fontWeight: '700', color: 'var(--text-primary)' }}>
-              ${fmt(totalMv)}
+              ${fmt(subsetMv)}
             </div>
             <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '2px' }}>
-              {positions.length} open positions
+              {customMode && selectedSymbols.size > 0
+                ? `${selectedSymbols.size} of ${allApiPositions.length} stocks selected`
+                : `${positions.length} open positions`}
             </div>
+            {customMode && selectedSymbols.size > 0 && (
+              <div style={{ fontSize: '10px', color: 'var(--text-secondary)', marginTop: '1px' }}>
+                Full portfolio: ${fmt(totalMv)}
+              </div>
+            )}
           </div>
 
           {/* New investment */}
@@ -384,6 +450,49 @@ export default function Rebalancer() {
         </div>
       )}
 
+      {/* Mode toggle bar */}
+      {data && positions.length > 0 && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: '8px',
+          marginBottom: '10px', flexWrap: 'wrap',
+        }}>
+          <button
+            onClick={exitCustomMode}
+            style={{
+              padding: '6px 14px', borderRadius: '8px', cursor: 'pointer',
+              fontSize: '12px', fontWeight: '600', border: 'none',
+              background: !customMode ? 'var(--sidebar-bg)' : 'var(--content-bg)',
+              color: !customMode ? 'white' : 'var(--text-secondary)',
+              transition: 'all 0.15s',
+            }}>
+            All Positions
+          </button>
+          <button
+            onClick={enterCustomMode}
+            style={{
+              padding: '6px 14px', borderRadius: '8px', cursor: 'pointer',
+              fontSize: '12px', fontWeight: '600', border: 'none',
+              background: customMode ? 'var(--sidebar-bg)' : 'var(--content-bg)',
+              color: customMode ? 'white' : 'var(--text-secondary)',
+              transition: 'all 0.15s',
+            }}>
+            ✦ Custom Selection
+          </button>
+          {customMode && (
+            <div style={{
+              fontSize: '11px', color: 'var(--text-secondary)',
+              padding: '6px 12px', background: 'var(--accent-light)',
+              borderRadius: '8px', border: '1px solid var(--accent)',
+              color: 'var(--accent-dark)',
+            }}>
+              {selectedSymbols.size === 0
+                ? 'Check stocks below to build your custom subset'
+                : `${selectedSymbols.size} stock${selectedSymbols.size !== 1 ? 's' : ''} selected · weights calculated within subset`}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Table */}
       {data && positions.length > 0 && (
         <div style={{
@@ -393,6 +502,7 @@ export default function Rebalancer() {
           <div style={{ overflowX: 'auto' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
               <colgroup>
+                {customMode && <col style={{ width: '40px' }} />}
                 <col style={{ width: '130px' }} />
                 <col style={{ width: '90px' }} />
                 <col style={{ width: '105px' }} />
@@ -406,6 +516,30 @@ export default function Rebalancer() {
               </colgroup>
               <thead>
                 <tr>
+                  {customMode && (
+                    <th onClick={toggleAllSymbols} style={{
+                      padding: '9px 8px', textAlign: 'center', cursor: 'pointer',
+                      background: 'var(--content-bg)', borderBottom: '2px solid var(--card-border)',
+                      width: '40px',
+                    }}>
+                      <div style={{
+                        width: '16px', height: '16px', borderRadius: '4px', margin: '0 auto',
+                        border: `2px solid ${selectedSymbols.size === allApiPositions.length ? 'var(--accent)' : 'var(--card-border)'}`,
+                        background: selectedSymbols.size === allApiPositions.length ? 'var(--accent)'
+                          : selectedSymbols.size > 0 ? 'var(--accent-light)' : 'white',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      }}>
+                        {selectedSymbols.size === allApiPositions.length && (
+                          <svg width="10" height="8" viewBox="0 0 10 8" fill="none">
+                            <path d="M1 4l3 3 5-6" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                          </svg>
+                        )}
+                        {selectedSymbols.size > 0 && selectedSymbols.size < allApiPositions.length && (
+                          <div style={{ width: '8px', height: '2px', background: 'var(--accent)', borderRadius: '1px' }} />
+                        )}
+                      </div>
+                    </th>
+                  )}
                   <SortTh label="Symbol"        sortKey="symbol"        align="left"   {...thProps} />
                   <SortTh label="Qty"            sortKey="qty"           align="right"  {...thProps} />
                   <SortTh label="ACB / Share"    sortKey="acb_per_share" align="right"  {...thProps} />
@@ -428,12 +562,36 @@ export default function Rebalancer() {
                   return (
                     <tr
                       key={p.symbol}
-                      style={{ borderBottom: isLast ? 'none' : '1px solid var(--filter-row-border)' }}
+                      style={{
+                        borderBottom: isLast ? 'none' : '1px solid var(--filter-row-border)',
+                        opacity: customMode && !p.inSubset ? 0.4 : 1,
+                        transition: 'opacity 0.15s',
+                      }}
                       onMouseEnter={e => e.currentTarget.style.background = 'var(--content-bg)'}
                       onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
                     >
+                      {/* Checkbox — custom mode only */}
+                      {customMode && (
+                        <td style={{ padding: '12px 8px', textAlign: 'center', verticalAlign: 'middle' }}
+                          onClick={() => toggleSymbol(p.symbol)}>
+                          <div style={{
+                            width: '16px', height: '16px', borderRadius: '4px', margin: '0 auto', cursor: 'pointer',
+                            border: `2px solid ${selectedSymbols.has(p.symbol) ? 'var(--accent)' : 'var(--card-border)'}`,
+                            background: selectedSymbols.has(p.symbol) ? 'var(--accent)' : 'white',
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            transition: 'all 0.1s',
+                          }}>
+                            {selectedSymbols.has(p.symbol) && (
+                              <svg width="10" height="8" viewBox="0 0 10 8" fill="none">
+                                <path d="M1 4l3 3 5-6" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                              </svg>
+                            )}
+                          </div>
+                        </td>
+                      )}
+
                       {/* Symbol */}
-                      <td style={{ padding: '12px 12px' }}>
+                      <td style={{ padding: '12px 12px', opacity: customMode && !p.inSubset ? 0.35 : 1 }}>
                         <div style={{ fontSize: '14px', fontWeight: '700', color: 'var(--accent-dark)' }}>
                           {p.symbol}
                         </div>

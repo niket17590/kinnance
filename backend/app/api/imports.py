@@ -36,42 +36,83 @@ MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
 # ============================================================
 
 
-def _post_import_task(symbols: list[str], renamed_symbols: dict = None):
+def _post_import_task(
+    batch_id: str,
+    affected_account_ids: list[str],
+    imported_symbols: list[str],
+    renamed_symbols: dict,
+):
     """
-    Background task fired after a successful import.
-    - Fetches security info for new symbols (yfinance)
-    - Pushes new symbols to front of price queue
-    - Handles symbol renames: disables old symbol, adds new one
-      renamed_symbols = {old_symbol: new_symbol}
+    Background task fired after transactions are committed.
+
+    Chain (sequential, each step only runs if previous succeeds):
+      1. recalculate_holdings + cash balances  (per account)
+      2. recalculate_realized_gains            (per account + member)
+      3. cleanup rebalancer targets            (per circle)
+      4. handle symbol renames                 (disable old, register new)
+      5. ensure_securities_exist               (yfinance company info)
+      6. push_to_queue                         (price fetch, priority)
+
+    Sets recalc_status on import_batch throughout so UI can poll.
     """
     bg_db = SessionLocal()
     try:
-        from app.services.price_service import ensure_securities_exist, push_to_queue
+        from app.services.import_service import set_recalc_status
+        from app.services.acb_service import recalculate_portfolio
+        from app.services.price_service import (
+            ensure_securities_exist, push_to_queue, disable_symbol
+        )
 
-        # Handle symbol renames — disable old, enable new
+        if not affected_account_ids:
+            set_recalc_status(bg_db, batch_id, "COMPLETE")
+            return
+
+        set_recalc_status(bg_db, batch_id, "PROCESSING")
+
+        # ── Step 1-3: recalculate holdings, gains, rebalancer ─
+        affected_member_rows = bg_db.execute(
+            text("SELECT DISTINCT member_id FROM member_accounts WHERE id = ANY(CAST(:ids AS uuid[]))"),
+            {"ids": affected_account_ids}
+        ).fetchall()
+        affected_member_ids = [str(r.member_id) for r in affected_member_rows]
+
+        circle_rows = bg_db.execute(
+            text("SELECT DISTINCT circle_id FROM circle_accounts WHERE account_id = ANY(CAST(:ids AS uuid[]))"),
+            {"ids": affected_account_ids}
+        ).fetchall()
+        affected_circle_ids = [str(r.circle_id) for r in circle_rows]
+
+        recalculate_portfolio(
+            bg_db,
+            affected_account_ids,
+            affected_member_ids,
+            affected_circle_ids,
+        )
+        logger.info(f"[batch {batch_id}] Recalculation complete for {len(affected_account_ids)} accounts")
+
+        # ── Step 4: symbol renames ────────────────────────────
         if renamed_symbols:
             for old_sym, new_sym in renamed_symbols.items():
-                # Disable old symbol in security_master and price_cache
-                bg_db.execute(
-                    text(
-                        "UPDATE security_master SET is_active = FALSE, updated_at = NOW() WHERE symbol = :sym"
-                    ),
-                    {"sym": old_sym},
-                )
-                bg_db.execute(
-                    text("DELETE FROM price_cache WHERE symbol = :sym"),
-                    {"sym": old_sym},
-                )
-                bg_db.commit()
-                logger.info(f"Disabled old symbol {old_sym} → renamed to {new_sym}")
+                disable_symbol(bg_db, old_sym)
+                logger.info(f"[batch {batch_id}] Disabled renamed symbol {old_sym} → {new_sym}")
 
-        # Fetch company info for new symbols
-        ensure_securities_exist(bg_db, symbols)
-        # Push to front of queue — scheduler fetches prices on next run
-        push_to_queue(symbols, priority=True)
-        logger.info(f"Post-import task complete for {len(symbols)} symbols")
+        # ── Step 5: security master ───────────────────────────
+        all_symbols = list(set(imported_symbols + list(renamed_symbols.values())))
+        ensure_securities_exist(bg_db, all_symbols)
+
+        # ── Step 6: price queue ───────────────────────────────
+        push_to_queue(all_symbols, priority=True)
+
+        set_recalc_status(bg_db, batch_id, "COMPLETE")
+        logger.info(f"[batch {batch_id}] Post-import task complete")
+
     except Exception as e:
-        logger.error(f"Post-import background task failed: {e}")
+        logger.error(f"[batch {batch_id}] Post-import task failed: {e}")
+        try:
+            from app.services.import_service import set_recalc_status
+            set_recalc_status(bg_db, batch_id, "FAILED", recalc_error=str(e)[:500])
+        except Exception:
+            pass
     finally:
         bg_db.close()
 
@@ -167,12 +208,18 @@ async def do_import(
         skipped_accounts=skipped,
     )
 
-    # Fire background task for new symbols
-    imported_symbols = result.get("imported_symbols", [])
-    renamed_symbols = result.get("renamed_symbols", {})
-    if (imported_symbols or renamed_symbols) and result.get("status") == "COMPLETE":
-        background_tasks.add_task(_post_import_task, imported_symbols, renamed_symbols)
+    # Fire background task — recalc + price fetch runs async
+    if result.get("status") == "COMPLETE" and result.get("imported", 0) > 0:
+        background_tasks.add_task(
+            _post_import_task,
+            result["batch_id"],
+            result.get("affected_account_ids", []),
+            result.get("imported_symbols", []),
+            result.get("renamed_symbols", {}),
+        )
 
+    # Strip internal field before returning to client
+    result.pop("affected_account_ids", None)
     return result
 
 
@@ -195,6 +242,26 @@ def get_import_batches(
         {"owner_id": str(current_user.id)},
     ).fetchall()
     return [dict(r._mapping) for r in result]
+
+
+@router.get("/batches/{batch_id}/recalc-status")
+def get_recalc_status(
+    batch_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_db_user),
+):
+    """Lightweight poll endpoint — returns recalc_status for a batch."""
+    row = db.execute(
+        text("""
+            SELECT recalc_status, recalc_error
+            FROM import_batches
+            WHERE id = :id AND owner_id = :owner_id
+        """),
+        {"id": batch_id, "owner_id": str(current_user.id)},
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Batch not found")
+    return {"recalc_status": row.recalc_status, "recalc_error": row.recalc_error}
 
 
 @router.delete("/batches/{batch_id}")
@@ -226,19 +293,31 @@ def delete_import_batch(
     db.execute(text("DELETE FROM import_batches WHERE id = :id"), {"id": batch_id})
     db.commit()
 
-    from app.services.acb_service import (
-        recalculate_holdings_for_accounts,
-        recalculate_realized_gains,
-    )
+    # Recalculate in background — same chain as import
+    if affected_ids:
+        from app.core.database import SessionLocal as _SL
+        import threading
 
-    recalculate_holdings_for_accounts(db, affected_ids)
-    affected_member_rows = db.execute(
-        text(
-            "SELECT DISTINCT member_id FROM member_accounts WHERE id = ANY(CAST(:ids AS uuid[]))"
-        ),
-        {"ids": affected_ids},
-    ).fetchall()
-    affected_member_ids = [str(r.member_id) for r in affected_member_rows]
-    recalculate_realized_gains(db, affected_ids, affected_member_ids)
+        def _recalc():
+            _db = _SL()
+            try:
+                from app.services.acb_service import recalculate_portfolio
+                member_rows = _db.execute(
+                    text("SELECT DISTINCT member_id FROM member_accounts WHERE id = ANY(CAST(:ids AS uuid[]))"),
+                    {"ids": affected_ids}
+                ).fetchall()
+                member_ids = [str(r.member_id) for r in member_rows]
+                circle_rows = _db.execute(
+                    text("SELECT DISTINCT circle_id FROM circle_accounts WHERE account_id = ANY(CAST(:ids AS uuid[]))"),
+                    {"ids": affected_ids}
+                ).fetchall()
+                circle_ids = [str(r.circle_id) for r in circle_rows]
+                recalculate_portfolio(_db, affected_ids, member_ids, circle_ids)
+            except Exception as e:
+                logger.error(f"Delete batch recalc failed: {e}")
+            finally:
+                _db.close()
 
-    return {"message": "Import batch deleted and holdings recalculated"}
+        threading.Thread(target=_recalc, daemon=True).start()
+
+    return {"message": "Import batch deleted — holdings recalculating in background"}

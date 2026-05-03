@@ -179,6 +179,20 @@ def update_import_batch(
     db.commit()
 
 
+def set_recalc_status(db: Session, batch_id: str, recalc_status: str, recalc_error: str = None):
+    """Update only the recalc_status — called by background worker."""
+    db.execute(
+        text("""
+            UPDATE import_batches
+            SET recalc_status = :status,
+                recalc_error  = :error
+            WHERE id = :id
+        """),
+        {"id": batch_id, "status": recalc_status, "error": recalc_error},
+    )
+    db.commit()
+
+
 # ============================================================
 # STEP 1 — PARSE AND CHECK MAPPINGS
 # ============================================================
@@ -482,35 +496,7 @@ def import_transactions(
             transaction_date_to=date_to,
         )
 
-        # ── Recalculate portfolio ─────────────────────────────
-        if imported > 0:
-            affected_ids = list(set(account_mapping.values()))
-            from app.services.acb_service import recalculate_portfolio
-
-            affected_member_rows = db.execute(
-                text("""
-                    SELECT DISTINCT member_id
-                    FROM member_accounts
-                    WHERE id = ANY(CAST(:ids AS uuid[]))
-                """),
-                {"ids": affected_ids}
-            ).fetchall()
-            affected_member_ids = [str(r.member_id) for r in affected_member_rows]
-
-            # Resolve circle_ids for rebalancer cleanup
-            circle_rows = db.execute(
-                text("""
-                    SELECT DISTINCT ca.circle_id
-                    FROM circle_accounts ca
-                    WHERE ca.account_id = ANY(CAST(:ids AS uuid[]))
-                """),
-                {"ids": affected_ids}
-            ).fetchall()
-            affected_circle_ids = [str(r.circle_id) for r in circle_rows]
-
-            recalculate_portfolio(db, affected_ids, affected_member_ids, affected_circle_ids)
-
-        # ── Collect symbols for price fetching ────────────────
+        # ── Collect symbols + renames for background worker ──
         imported_symbols = list(set(
             t.symbol_normalized
             for t in parse_result.transactions
@@ -519,7 +505,6 @@ def import_transactions(
             and t.broker_account_identifier not in skipped_accounts
         ))
 
-        # ── Collect symbol renames ────────────────────────────
         renamed_symbols = {}
         for t in parse_result.transactions:
             if (t.transaction_type == 'CORPORATE_ACTION'
@@ -531,6 +516,9 @@ def import_transactions(
                 renamed_symbols[old_sym] = t.symbol_normalized
                 if t.symbol_normalized not in imported_symbols:
                     imported_symbols.append(t.symbol_normalized)
+
+        # affected accounts — returned so background task knows what to recalculate
+        affected_account_ids = list(set(account_mapping.values())) if imported > 0 else []
 
         return {
             "status": "COMPLETE",
@@ -544,6 +532,7 @@ def import_transactions(
             "parse_errors": parse_result.errors[:10],
             "imported_symbols": imported_symbols,
             "renamed_symbols": renamed_symbols,
+            "affected_account_ids": affected_account_ids,
         }
 
     except Exception as e:
