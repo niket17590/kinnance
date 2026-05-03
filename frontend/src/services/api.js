@@ -72,7 +72,8 @@ export const circlesApi = {
   update: (id, data) => api.put(`/circles/${id}`, data),
   delete: (id) => api.delete(`/circles/${id}`),
   getAccounts: (circleId) => api.get(`/circles/${circleId}/accounts`),
-  bulkUpdateAccounts: (circleId, data) => api.post(`/circles/${circleId}/accounts/bulk`, data)
+  bulkUpdateAccounts: (circleId, data) => api.post(`/circles/${circleId}/accounts/bulk`, data),
+  resync: (circleId) => api.post(`/circles/${circleId}/resync`)
 }
 
 // ── Reference Data ────────────────────────────────────────────

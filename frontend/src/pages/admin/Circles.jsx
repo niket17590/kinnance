@@ -30,6 +30,38 @@ const groupByMember = (accounts) =>
     return acc;
   }, {});
 
+function ResyncBadge({ status }) {
+  if (status === "PROCESSING") {
+    return (
+      <span style={{
+        fontSize: "11px",
+        fontWeight: "700",
+        padding: "2px 8px",
+        borderRadius: "999px",
+        background: "#DBEAFE",
+        color: "#1D4ED8",
+      }}>
+        Re-sync in progress
+      </span>
+    );
+  }
+  if (status === "FAILED") {
+    return (
+      <span style={{
+        fontSize: "11px",
+        fontWeight: "700",
+        padding: "2px 8px",
+        borderRadius: "999px",
+        background: "#FEE2E2",
+        color: "#DC2626",
+      }}>
+        Re-sync failed
+      </span>
+    );
+  }
+  return null;
+}
+
 // ── Circle create / edit modal ────────────────────────────────
 
 function CircleModal({ circle, onSave, onClose }) {
@@ -368,9 +400,11 @@ function Checkbox({ checked, indeterminate = false }) {
 
 // ── Circle card — pure display, accounts passed as props ──────
 
-function CircleCard({ circle, onEdit, onDelete, onManaged }) {
+function CircleCard({ circle, onEdit, onDelete, onManaged, onResync }) {
   const [showManageModal, setShowManageModal] = useState(false);
   const grouped = groupByMember(circle.accounts || []);
+  const isResyncing = circle.resync_status === "PROCESSING";
+  const hasResyncError = circle.resync_status === "FAILED";
 
   return (
     <>
@@ -394,14 +428,29 @@ function CircleCard({ circle, onEdit, onDelete, onManaged }) {
               <span style={{ fontSize: "11px", color: "var(--text-secondary)" }}>
                 {circle.accounts?.length || 0} account{circle.accounts?.length !== 1 ? "s" : ""}
               </span>
+              <ResyncBadge status={circle.resync_status} />
             </div>
             {circle.description && (
               <p style={{ fontSize: "12px", color: "var(--text-secondary)", marginTop: "3px" }}>
                 {circle.description}
               </p>
             )}
+            {hasResyncError && circle.resync_error && (
+              <p style={{ fontSize: "11px", color: "#DC2626", marginTop: "4px" }}>
+                {circle.resync_error}
+              </p>
+            )}
           </div>
           <div style={{ display: "flex", gap: "6px", flexShrink: 0 }}>
+            <button onClick={() => onResync(circle)} disabled={isResyncing}
+              style={{ padding: "6px 12px", borderRadius: "7px",
+                border: "1.5px solid #1D4ED8",
+                background: isResyncing ? "#DBEAFE" : "transparent",
+                color: "#1D4ED8", fontSize: "12px", fontWeight: "600",
+                cursor: isResyncing ? "not-allowed" : "pointer",
+                opacity: isResyncing ? 0.7 : 1 }}>
+              {isResyncing ? "Re-syncing..." : "Re-sync holdings"}
+            </button>
             <button onClick={() => setShowManageModal(true)}
               style={{ padding: "6px 14px", borderRadius: "7px",
                 border: "1.5px solid var(--accent)", background: "transparent",
@@ -487,15 +536,15 @@ function Circles() {
   const [editingCircle, setEditingCircle] = useState(null);
   const { refreshCircles, refreshFilterOptions } = useFilters();
 
-  const fetchCircles = useCallback(async () => {
+  const fetchCircles = useCallback(async (silent = false) => {
     try {
-      setLoading(true);
+      if (!silent) setLoading(true);
       const res = await circlesApi.getWithAccounts();
       setCircles(res.data);
     } catch {
       setError("Failed to load circles");
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, []);
 
@@ -517,6 +566,24 @@ function Circles() {
     refreshCircles();     // update FilterContext circle list
     refreshFilterOptions(); // update member/account/broker pills
   };
+
+  const handleResync = async (circle) => {
+    try {
+      await circlesApi.resync(circle.id);
+      fetchCircles(true);
+    } catch {
+      alert("Failed to start re-sync");
+    }
+  };
+
+  useEffect(() => {
+    const hasProcessing = circles.some((circle) => circle.resync_status === "PROCESSING");
+    if (!hasProcessing) return;
+    const intervalId = setInterval(() => {
+      fetchCircles(true);
+    }, 3000);
+    return () => clearInterval(intervalId);
+  }, [circles, fetchCircles]);
 
   const handleModalSave = () => {
     setShowModal(false);
@@ -587,6 +654,7 @@ function Circles() {
               onEdit={c => { setEditingCircle(c); setShowModal(true); }}
               onDelete={handleDelete}
               onManaged={handleSaved}
+              onResync={handleResync}
             />
           ))}
         </div>

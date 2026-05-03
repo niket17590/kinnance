@@ -637,7 +637,7 @@ def refresh_prices(db: Session, us_symbols: list[str], ca_symbols: list[str]):
     logger.info(f"Price refresh done — updated: {updated}, failed: {failed}")
 
     if updated > 0:
-        _update_holdings_unrealized(db)
+        update_holdings_unrealized_from_cache(db)
 
 
 # ============================================================
@@ -707,6 +707,11 @@ def disable_symbol(db: Session, symbol: str):
 # ============================================================
 # INTERNAL — update holdings unrealized G/L
 # ============================================================
+
+def update_holdings_unrealized_from_cache(db: Session):
+    """Re-apply existing price_cache values to current holdings rows."""
+    _update_holdings_unrealized(db)
+
 
 def _update_holdings_unrealized(db: Session):
     """Update open holdings with latest prices from price_cache."""

@@ -188,7 +188,9 @@ export default function Performance() {
     if (!selectedCircle) { setData(null); return }
     setLoading(true); setError('')
     try {
-      const params = { circle_id: selectedCircle.id }
+      const params = {}
+      const circleId = debouncedFilters.circleId || selectedCircle.id
+      if (circleId) params.circle_id = circleId
       if (debouncedFilters.memberIds?.length) params.member_ids = debouncedFilters.memberIds.join(',')
       if (debouncedFilters.accountTypes?.length) params.account_types = debouncedFilters.accountTypes.join(',')
       if (debouncedFilters.brokers?.length) params.brokers = debouncedFilters.brokers.join(',')
@@ -201,7 +203,9 @@ export default function Performance() {
     }
   }, [selectedCircle, debouncedFilters])
 
-  useEffect(() => { fetchPerformance() }, [fetchPerformance])
+  const filterKey = JSON.stringify(debouncedFilters)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { fetchPerformance() }, [filterKey])
 
   if (!selectedCircle) {
     return (

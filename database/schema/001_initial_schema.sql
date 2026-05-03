@@ -432,10 +432,14 @@ CREATE TABLE IF NOT EXISTS import_batches (
     transaction_date_from   DATE,
     transaction_date_to     DATE,
     error_message           TEXT,
+    recalc_status           TEXT NOT NULL DEFAULT 'PENDING',
+    recalc_error            TEXT,
     imported_at             TIMESTAMPTZ,
     created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT chk_import_status
-        CHECK (status IN ('PROCESSING', 'COMPLETE', 'FAILED'))
+        CHECK (status IN ('PROCESSING', 'COMPLETE', 'FAILED')),
+    CONSTRAINT chk_import_recalc_status
+        CHECK (recalc_status IN ('PENDING', 'PROCESSING', 'COMPLETE', 'FAILED'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_import_batches_owner

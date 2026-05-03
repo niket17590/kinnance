@@ -14,6 +14,11 @@ const fmtC = (n, abs = false) => {
   return `$${fmt(Math.abs(v))}`
 }
 
+const fmtMoney = (n, currency = 'CAD') => {
+  if (n == null) return '—'
+  return `$${fmt(Math.abs(n))} ${currency}`
+}
+
 const glColor = (n) => Number(n) >= 0 ? '#059669' : '#DC2626'
 const glPrefix = (n) => Number(n) >= 0 ? '+' : '-'
 const glBg = (n) => Number(n) >= 0 ? '#DCFCE7' : '#FEE2E2'
@@ -205,8 +210,11 @@ function HoldingBar({ h, totalMv, rank }) {
 
 function TxnRow({ t }) {
   const tc = TYPE_COLORS[t.transaction_type] || { bg: '#F3F4F6', color: '#374151', label: t.transaction_type }
-  const isCredit = t.net_amount_cad >= 0
+  const amountValue = t.amount_value ?? t.net_amount_cad ?? t.net_amount
+  const amountCurrency = t.amount_currency || 'CAD'
+  const isCredit = Number(amountValue || 0) >= 0
   const date = new Date(t.trade_date).toLocaleDateString('en-CA', { month: 'short', day: 'numeric' })
+  const showCadSub = amountCurrency !== 'CAD' && Math.abs(Number(t.net_amount_cad || 0)) >= 0.005
 
   return (
     <div style={{
@@ -233,17 +241,23 @@ function TxnRow({ t }) {
           )}
         </div>
         <div style={{ fontSize: '10px', color: 'var(--text-secondary)', marginTop: '1px' }}>
-          {t.member_name} · {date}
+          {t.member_name} · {t.account_label} · {date}
         </div>
       </div>
 
       {/* Amount */}
-      <div style={{
-        fontSize: '12px', fontWeight: '700',
-        color: isCredit ? '#059669' : '#DC2626',
-        whiteSpace: 'nowrap',
-      }}>
-        {isCredit ? '+' : '-'}${fmt(Math.abs(t.net_amount_cad))}
+      <div style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+        <div style={{
+          fontSize: '12px', fontWeight: '700',
+          color: isCredit ? '#059669' : '#DC2626',
+        }}>
+          {isCredit ? '+' : '-'}{fmtMoney(amountValue, amountCurrency)}
+        </div>
+        {showCadSub && (
+          <div style={{ fontSize: '10px', color: 'var(--text-secondary)', marginTop: '1px' }}>
+            CAD {Number(t.net_amount_cad) >= 0 ? '+' : '-'}${fmt(Math.abs(t.net_amount_cad))}
+          </div>
+        )}
       </div>
     </div>
   )
@@ -283,7 +297,7 @@ function GainPill({ p, isWinner }) {
 // ── Main Dashboard ────────────────────────────────────────────
 
 export default function Dashboard() {
-  const { selectedCircle, activeFilters } = useFilters()
+  const { selectedCircle, debouncedFilters } = useFilters()
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -292,16 +306,23 @@ export default function Dashboard() {
     if (!selectedCircle) { setData(null); return }
     setLoading(true); setError('')
     try {
-      const res = await api.get('/dashboard', { params: { circle_id: selectedCircle.id } })
+      const params = {}
+      if (debouncedFilters.circleId) params.circle_id = debouncedFilters.circleId
+      if (debouncedFilters.memberIds?.length) params.member_ids = debouncedFilters.memberIds.join(',')
+      if (debouncedFilters.accountTypes?.length) params.account_types = debouncedFilters.accountTypes.join(',')
+      if (debouncedFilters.brokers?.length) params.brokers = debouncedFilters.brokers.join(',')
+      const res = await api.get('/dashboard', { params })
       setData(res.data)
     } catch (err) {
       setError(err.response?.data?.detail || 'Failed to load dashboard')
     } finally {
       setLoading(false)
     }
-  }, [selectedCircle])
+  }, [selectedCircle, debouncedFilters])
 
-  useEffect(() => { fetchDashboard() }, [fetchDashboard])
+  const filterKey = JSON.stringify(debouncedFilters)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { fetchDashboard() }, [filterKey])
 
   if (!selectedCircle) {
     return (

@@ -518,7 +518,9 @@ def import_transactions(
                     imported_symbols.append(t.symbol_normalized)
 
         # affected accounts — passed to background task for recalculation
-        affected_account_ids = list(set(account_mapping.values())) if imported > 0 else []
+        # Recalculate even when imported=0 (all duplicates) so derived tables
+        # can self-heal and remain consistent with source transactions.
+        affected_account_ids = list(set(account_mapping.values()))
 
         return {
             "status": "COMPLETE",

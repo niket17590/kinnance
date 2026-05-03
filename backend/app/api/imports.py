@@ -58,7 +58,8 @@ def _post_import_task(
             recalculate_holdings_for_accounts, recalculate_realized_gains
         )
         from app.services.price_service import (
-            ensure_securities_exist, push_to_queue, disable_symbol
+            ensure_securities_exist, push_to_queue, disable_symbol,
+            update_holdings_unrealized_from_cache
         )
 
         if not affected_account_ids:
@@ -97,6 +98,7 @@ def _post_import_task(
 
         # Step 4 — price queue
         push_to_queue(all_symbols, priority=True)
+        update_holdings_unrealized_from_cache(bg_db)
 
         set_recalc_status(bg_db, batch_id, "COMPLETE")
         logger.info(f"[batch {batch_id}] Post-import task complete")
@@ -203,18 +205,19 @@ async def do_import(
         skipped_accounts=skipped,
     )
 
-    # Fire background task — recalc chain runs async
+    # Fire background task — recalc chain runs async (even for duplicate-only uploads)
     if result.get("status") == "COMPLETE":
-        if result.get("imported", 0) > 0:
+        affected_ids = result.get("affected_account_ids", [])
+        if affected_ids:
             background_tasks.add_task(
                 _post_import_task,
                 result["batch_id"],
-                result.get("affected_account_ids", []),
+                affected_ids,
                 result.get("imported_symbols", []),
                 result.get("renamed_symbols", {}),
             )
         else:
-            # Nothing imported (all duplicates) — mark recalc done immediately
+            # No account context in this upload — nothing to recalc
             from app.services.import_service import set_recalc_status
             set_recalc_status(db, result["batch_id"], "COMPLETE")
 

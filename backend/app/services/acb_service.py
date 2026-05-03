@@ -154,6 +154,11 @@ def recalculate_holdings(db: Session, account_id: str):
             'total_cost_sold': str(data['total_cost_sold']),
         })
 
+    db.execute(
+        text("DELETE FROM holdings WHERE account_id = :account_id"),
+        {'account_id': account_id}
+    )
+
     if upsert_rows:
         db.execute(
             text("""
@@ -251,6 +256,11 @@ def recalculate_cash_balances(db: Session, account_id: str):
             'total':      str(balance),
             'locked':     str(locked_amount),
         })
+
+    db.execute(
+        text("DELETE FROM cash_balances WHERE account_id = :account_id"),
+        {'account_id': account_id}
+    )
 
     if upsert_rows:
         db.execute(
