@@ -243,7 +243,9 @@ def rename_security(
 
         # Step 5 — Recalculate portfolio via unified pipeline
         if affected_ids:
-            from app.services.acb_service import recalculate_portfolio
+            from app.services.acb_service import (
+                recalculate_holdings_for_accounts, recalculate_realized_gains
+            )
 
             affected_member_rows = db.execute(
                 text("SELECT DISTINCT member_id FROM member_accounts WHERE id = ANY(CAST(:ids AS uuid[]))"),
@@ -251,7 +253,8 @@ def rename_security(
             ).fetchall()
             affected_member_ids = [str(r.member_id) for r in affected_member_rows]
 
-            recalculate_portfolio(db, affected_ids, affected_member_ids, affected_circle_ids)
+            recalculate_holdings_for_accounts(db, affected_ids)
+            recalculate_realized_gains(db, affected_ids, affected_member_ids)
             logger.info(f"Rename: recalculated portfolio for {len(affected_ids)} accounts")
 
         # Step 6 — Disable old symbol

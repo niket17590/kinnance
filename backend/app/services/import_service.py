@@ -179,8 +179,8 @@ def update_import_batch(
     db.commit()
 
 
-def set_recalc_status(db: Session, batch_id: str, recalc_status: str, recalc_error: str = None):
-    """Update only the recalc_status — called by background worker."""
+def set_recalc_status(db, batch_id: str, recalc_status: str, recalc_error: str = None):
+    """Update recalc_status on an import batch — called by background worker."""
     db.execute(
         text("""
             UPDATE import_batches
@@ -517,7 +517,7 @@ def import_transactions(
                 if t.symbol_normalized not in imported_symbols:
                     imported_symbols.append(t.symbol_normalized)
 
-        # affected accounts — returned so background task knows what to recalculate
+        # affected accounts — passed to background task for recalculation
         affected_account_ids = list(set(account_mapping.values())) if imported > 0 else []
 
         return {

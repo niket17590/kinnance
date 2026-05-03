@@ -46,11 +46,13 @@ def recalculate_holdings(db: Session, account_id: str):
             AND symbol_normalized IS NOT NULL
             AND quantity IS NOT NULL
             ORDER BY trade_date ASC, created_at ASC,
-            CASE transaction_type WHEN 'BUY' THEN 0
-                                  WHEN 'STOCK_SPLIT' THEN 1
-                                  WHEN 'RETURN_OF_CAPITAL' THEN 2
-                                  WHEN 'SELL' THEN 3
-                                  ELSE 4 END ASC
+            CASE transaction_type
+                WHEN 'BUY'              THEN 0
+                WHEN 'STOCK_SPLIT'      THEN 1
+                WHEN 'RETURN_OF_CAPITAL' THEN 2
+                WHEN 'SELL'             THEN 3
+                ELSE 4
+            END ASC
         """),
         {'account_id': account_id}
     ).fetchall()
@@ -202,11 +204,13 @@ def recalculate_cash_balances(db: Session, account_id: str):
             FROM transactions
             WHERE account_id = :account_id
             ORDER BY trade_date ASC, created_at ASC,
-            CASE transaction_type WHEN 'BUY' THEN 0
-                                  WHEN 'STOCK_SPLIT' THEN 1
-                                  WHEN 'RETURN_OF_CAPITAL' THEN 2
-                                  WHEN 'SELL' THEN 3
-                                  ELSE 4 END ASC
+            CASE transaction_type
+                WHEN 'BUY'              THEN 0
+                WHEN 'STOCK_SPLIT'      THEN 1
+                WHEN 'RETURN_OF_CAPITAL' THEN 2
+                WHEN 'SELL'             THEN 3
+                ELSE 4
+            END ASC
         """),
         {'account_id': account_id}
     ).fetchall()
@@ -376,11 +380,13 @@ def _recalculate_realized_gains_for_account(db: Session, account_id: str):
             AND symbol_normalized IS NOT NULL
             AND quantity IS NOT NULL
             ORDER BY trade_date ASC, created_at ASC,
-            CASE transaction_type WHEN 'BUY' THEN 0
-                                  WHEN 'STOCK_SPLIT' THEN 1
-                                  WHEN 'RETURN_OF_CAPITAL' THEN 2
-                                  WHEN 'SELL' THEN 3
-                                  ELSE 4 END ASC
+            CASE transaction_type
+                WHEN 'BUY'              THEN 0
+                WHEN 'STOCK_SPLIT'      THEN 1
+                WHEN 'RETURN_OF_CAPITAL' THEN 2
+                WHEN 'SELL'             THEN 3
+                ELSE 4
+            END ASC
         """),
         {'account_id': account_id}
     ).fetchall()
