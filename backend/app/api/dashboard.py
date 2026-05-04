@@ -2,6 +2,8 @@
 Dashboard API: single endpoint for dashboard widgets.
 Respects selected circle + top filter bar selections, and aggregates holdings by symbol.
 """
+import json
+
 from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import text
@@ -11,6 +13,20 @@ from app.core.database import get_db
 from app.core.security import get_current_db_user
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
+
+
+def _json_list(value):
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, list) else []
+        except Exception:
+            return []
+    return []
 
 
 @router.get("")
@@ -355,6 +371,67 @@ def get_dashboard(
         key=lambda x: -x["market_value"],
     )
 
+    # 7) Earnings watch for the currently selected circle/filter holdings.
+    earnings_watch = []
+    symbols = [h["symbol"] for h in aggregated_holdings if h["symbol"]]
+    if symbols:
+        weight_map = {
+            h["symbol"]: round(h["market_value"] / total_mv * 100, 2) if total_mv > 0 else 0
+            for h in aggregated_holdings
+        }
+        mv_map = {h["symbol"]: round(h["market_value"], 2) for h in aggregated_holdings}
+        rows = db.execute(
+            text("""
+                SELECT
+                    symbol, earnings_date, earnings_time, fiscal_quarter, status,
+                    eps_estimate, eps_actual, eps_surprise_pct,
+                    revenue_estimate, revenue_actual, revenue_surprise_pct,
+                    previous_earnings_date,
+                    previous_eps_estimate, previous_eps_actual, previous_eps_surprise_pct,
+                    previous_revenue_estimate, previous_revenue_actual, previous_revenue_surprise_pct,
+                    bullish_points, bearish_points, fetched_at
+                FROM earnings_events
+                WHERE symbol = ANY(CAST(:symbols AS text[]))
+                ORDER BY
+                    CASE
+                        WHEN status = 'TODAY' THEN 0
+                        WHEN status = 'UPCOMING' THEN 1
+                        WHEN status = 'REPORTED' THEN 2
+                        ELSE 3
+                    END,
+                    earnings_date ASC NULLS LAST,
+                    symbol ASC
+            """),
+            {"symbols": symbols},
+        ).fetchall()
+
+        for row in rows:
+            earnings_watch.append({
+                "symbol": row.symbol,
+                "market_value": mv_map.get(row.symbol, 0),
+                "weight_pct": weight_map.get(row.symbol, 0),
+                "earnings_date": str(row.earnings_date) if row.earnings_date else None,
+                "earnings_time": row.earnings_time,
+                "fiscal_quarter": row.fiscal_quarter,
+                "status": row.status,
+                "eps_estimate": float(row.eps_estimate) if row.eps_estimate is not None else None,
+                "eps_actual": float(row.eps_actual) if row.eps_actual is not None else None,
+                "eps_surprise_pct": float(row.eps_surprise_pct) if row.eps_surprise_pct is not None else None,
+                "revenue_estimate": float(row.revenue_estimate) if row.revenue_estimate is not None else None,
+                "revenue_actual": float(row.revenue_actual) if row.revenue_actual is not None else None,
+                "revenue_surprise_pct": float(row.revenue_surprise_pct) if row.revenue_surprise_pct is not None else None,
+                "previous_earnings_date": str(row.previous_earnings_date) if row.previous_earnings_date else None,
+                "previous_eps_estimate": float(row.previous_eps_estimate) if row.previous_eps_estimate is not None else None,
+                "previous_eps_actual": float(row.previous_eps_actual) if row.previous_eps_actual is not None else None,
+                "previous_eps_surprise_pct": float(row.previous_eps_surprise_pct) if row.previous_eps_surprise_pct is not None else None,
+                "previous_revenue_estimate": float(row.previous_revenue_estimate) if row.previous_revenue_estimate is not None else None,
+                "previous_revenue_actual": float(row.previous_revenue_actual) if row.previous_revenue_actual is not None else None,
+                "previous_revenue_surprise_pct": float(row.previous_revenue_surprise_pct) if row.previous_revenue_surprise_pct is not None else None,
+                "bullish_points": _json_list(row.bullish_points),
+                "bearish_points": _json_list(row.bearish_points),
+                "fetched_at": row.fetched_at.isoformat() if row.fetched_at else None,
+            })
+
     return {
         "circle_id": circle_id,
         "circle_name": circle.name,
@@ -377,4 +454,20 @@ def get_dashboard(
         "winners": [holding_summary(h) for h in winners],
         "losers": [holding_summary(h) for h in losers],
         "member_breakdown": member_breakdown,
+        "earnings_watch": earnings_watch,
+    }
+
+
+@router.post("/earnings/refresh")
+def refresh_earnings(
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_db_user),
+):
+    from app.services.earnings_service import sync_earnings_events
+
+    result = sync_earnings_events(db)
+    return {
+        "status": "COMPLETE",
+        "message": "Earnings data refreshed",
+        **result,
     }

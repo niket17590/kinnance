@@ -996,4 +996,51 @@ CREATE TRIGGER trigger_rebalancer_targets_updated_at
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 COMMENT ON TABLE rebalancer_targets IS 'User-defined target weights per symbol per circle for portfolio rebalancing';
+
+-- ============================================================
+-- EARNINGS EVENTS
+-- Cached earnings dates and reported metrics for active symbols.
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS earnings_events (
+    symbol                  TEXT PRIMARY KEY,
+    earnings_date           DATE,
+    earnings_time           TEXT,
+    fiscal_quarter          TEXT,
+    status                  TEXT NOT NULL DEFAULT 'UNKNOWN',
+    eps_estimate            NUMERIC(18,6),
+    eps_actual              NUMERIC(18,6),
+    eps_surprise_pct        NUMERIC(10,4),
+    revenue_estimate        NUMERIC(20,2),
+    revenue_actual          NUMERIC(20,2),
+    revenue_surprise_pct    NUMERIC(10,4),
+    previous_earnings_date  DATE,
+    previous_eps_estimate   NUMERIC(18,6),
+    previous_eps_actual     NUMERIC(18,6),
+    previous_eps_surprise_pct NUMERIC(10,4),
+    previous_revenue_estimate NUMERIC(20,2),
+    previous_revenue_actual NUMERIC(20,2),
+    previous_revenue_surprise_pct NUMERIC(10,4),
+    bullish_points          JSONB NOT NULL DEFAULT '[]'::jsonb,
+    bearish_points          JSONB NOT NULL DEFAULT '[]'::jsonb,
+    source                  TEXT NOT NULL DEFAULT 'yfinance',
+    last_checked_at         TIMESTAMPTZ,
+    fetched_at              TIMESTAMPTZ,
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT chk_earnings_events_status
+        CHECK (status IN ('UNKNOWN', 'UPCOMING', 'TODAY', 'REPORTED'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_earnings_events_date
+    ON earnings_events(earnings_date);
+
+CREATE INDEX IF NOT EXISTS idx_earnings_events_status
+    ON earnings_events(status);
+
+CREATE TRIGGER trigger_earnings_events_updated_at
+    BEFORE UPDATE ON earnings_events
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+COMMENT ON TABLE earnings_events IS 'Cached yfinance earnings data for active security_master symbols';
 COMMENT ON COLUMN rebalancer_targets.target_weight_pct IS '0-100 — target % of portfolio. Total across circle can be < 100 (user may only target some positions).';

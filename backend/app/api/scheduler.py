@@ -21,6 +21,7 @@ PRICE_INTERVAL_MINUTES   = int(os.getenv("PRICE_UPDATE_INTERVAL_MINUTES", "10"))
 PRICE_BATCH_SIZE         = int(os.getenv("PRICE_BATCH_SIZE", "8"))
 CA_PRICE_BATCH_SIZE      = int(os.getenv("CA_PRICE_BATCH_SIZE", "20"))
 NIGHTLY_CRON             = os.getenv("NIGHTLY_CLOSE_CRON", "0 21 * * 1-5")
+EARNINGS_CRON            = os.getenv("EARNINGS_CRON", "30 22 * * *")
 
 _scheduler: BackgroundScheduler | None = None
 
@@ -110,6 +111,19 @@ def _nightly_close_job():
         db.close()
 
 
+def _earnings_refresh_job():
+    """Refresh cached earnings data for active symbols."""
+    db = _get_db()
+    try:
+        from app.services.earnings_service import sync_earnings_events
+        logger.info("Scheduler: refreshing earnings events")
+        sync_earnings_events(db)
+    except Exception as e:
+        logger.error(f"Scheduler earnings refresh failed: {e}")
+    finally:
+        db.close()
+
+
 # ============================================================
 # START / STOP
 # ============================================================
@@ -167,13 +181,29 @@ def start_scheduler():
             replace_existing=True
         )
 
+    earnings_parts = EARNINGS_CRON.split()
+    if len(earnings_parts) == 5:
+        minute, hour, day, month, day_of_week = earnings_parts
+        _scheduler.add_job(
+            _earnings_refresh_job,
+            trigger=CronTrigger(
+                minute=minute, hour=hour,
+                day=day, month=month,
+                day_of_week=day_of_week
+            ),
+            id="earnings_refresh",
+            name="Earnings events refresh",
+            replace_existing=True
+        )
+
     _scheduler.start()
     logger.info(
         f"Scheduler started — "
         f"interval: {PRICE_INTERVAL_MINUTES} min, "
         f"US batch: {PRICE_BATCH_SIZE}, "
         f"CA batch: {CA_PRICE_BATCH_SIZE}, "
-        f"nightly: {NIGHTLY_CRON}"
+        f"nightly: {NIGHTLY_CRON}, "
+        f"earnings: {EARNINGS_CRON}"
     )
 
 

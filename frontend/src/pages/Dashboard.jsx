@@ -19,6 +19,20 @@ const fmtMoney = (n, currency = 'CAD') => {
   return `$${fmt(Math.abs(n))} ${currency}`
 }
 
+const fmtCompactMoney = (n) => {
+  if (n == null) return 'â€”'
+  const abs = Math.abs(Number(n))
+  if (abs >= 1000000000) return `$${fmt(abs / 1000000000, 2)}B`
+  if (abs >= 1000000) return `$${fmt(abs / 1000000, 2)}M`
+  if (abs >= 1000) return `$${fmt(abs / 1000, 1)}K`
+  return `$${fmt(abs, 0)}`
+}
+
+const fmtDate = (d) => {
+  if (!d) return 'TBD'
+  return new Date(`${d}T00:00:00`).toLocaleDateString('en-CA', { month: 'short', day: 'numeric' })
+}
+
 const glColor = (n) => Number(n) >= 0 ? '#059669' : '#DC2626'
 const glPrefix = (n) => Number(n) >= 0 ? '+' : '-'
 const glBg = (n) => Number(n) >= 0 ? '#DCFCE7' : '#FEE2E2'
@@ -296,11 +310,98 @@ function GainPill({ p, isWinner }) {
 
 // ── Main Dashboard ────────────────────────────────────────────
 
+function EarningsWatch({ rows }) {
+  const statusStyle = {
+    TODAY: { bg: '#FEF3C7', color: '#92400E', label: 'Today' },
+    UPCOMING: { bg: '#DBEAFE', color: '#1D4ED8', label: 'Upcoming' },
+    REPORTED: { bg: '#DCFCE7', color: '#059669', label: 'Reported' },
+    UNKNOWN: { bg: '#F3F4F6', color: '#374151', label: 'Unknown' },
+  }
+
+  if (!rows?.length) {
+    return <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>No earnings data cached yet</div>
+  }
+
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '10px' }}>
+      {rows.map(row => {
+        const st = statusStyle[row.status] || statusStyle.UNKNOWN
+        const bullish = row.bullish_points?.[0]
+        const bearish = row.bearish_points?.[0]
+        const lastEpsActual = row.previous_eps_actual ?? row.eps_actual
+        const lastEpsEstimate = row.previous_eps_estimate ?? row.eps_estimate
+        const lastRevenueActual = row.previous_revenue_actual ?? row.revenue_actual
+        const lastRevenueEstimate = row.previous_revenue_estimate ?? row.revenue_estimate
+        return (
+          <div key={row.symbol} style={{
+            border: '1px solid var(--filter-row-border)',
+            borderRadius: '10px',
+            padding: '12px',
+            background: 'var(--content-bg)',
+            minWidth: 0,
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', marginBottom: '10px' }}>
+              <div>
+                <div style={{ fontSize: '14px', fontWeight: '700', color: 'var(--accent-dark)' }}>{row.symbol}</div>
+                <div style={{ fontSize: '10px', color: 'var(--text-secondary)' }}>{fmt(row.weight_pct, 1)}% weight</div>
+              </div>
+              <div style={{ textAlign: 'right' }}>
+                <div style={{
+                  display: 'inline-block',
+                  fontSize: '10px',
+                  fontWeight: '700',
+                  padding: '2px 7px',
+                  borderRadius: '5px',
+                  background: st.bg,
+                  color: st.color,
+                  marginBottom: '3px',
+                }}>
+                  {st.label}
+                </div>
+                <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>{fmtDate(row.earnings_date)}</div>
+                {row.previous_earnings_date && (
+                  <div style={{ fontSize: '10px', color: 'var(--text-secondary)', marginTop: '1px' }}>
+                    Last {fmtDate(row.previous_earnings_date)}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', marginBottom: '9px' }}>
+              <div>
+                <div style={{ fontSize: '10px', color: 'var(--text-secondary)', textTransform: 'uppercase', fontWeight: '700' }}>Last EPS</div>
+                <div style={{ fontSize: '12px', color: 'var(--text-primary)', fontWeight: '700' }}>
+                  {lastEpsActual != null ? fmt(lastEpsActual, 2) : 'Actual -'} / {lastEpsEstimate != null ? fmt(lastEpsEstimate, 2) : 'Est -'}
+                </div>
+              </div>
+              <div>
+                <div style={{ fontSize: '10px', color: 'var(--text-secondary)', textTransform: 'uppercase', fontWeight: '700' }}>Last Revenue</div>
+                <div style={{ fontSize: '12px', color: 'var(--text-primary)', fontWeight: '700' }}>
+                  {lastRevenueActual != null ? fmtCompactMoney(lastRevenueActual) : 'Actual -'} / {lastRevenueEstimate != null ? fmtCompactMoney(lastRevenueEstimate) : 'Est -'}
+                </div>
+              </div>
+            </div>
+
+            {(bullish || bearish) && (
+              <div style={{ borderTop: '1px solid var(--filter-row-border)', paddingTop: '8px' }}>
+                {bullish && <div style={{ fontSize: '11px', color: '#059669', marginBottom: '3px' }}>+ {bullish}</div>}
+                {bearish && <div style={{ fontSize: '11px', color: '#DC2626' }}>- {bearish}</div>}
+              </div>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 export default function Dashboard() {
   const { selectedCircle, debouncedFilters } = useFilters()
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [earningsRefreshing, setEarningsRefreshing] = useState(false)
+  const [earningsMessage, setEarningsMessage] = useState('')
 
   const fetchDashboard = useCallback(async () => {
     if (!selectedCircle) { setData(null); return }
@@ -323,6 +424,22 @@ export default function Dashboard() {
   const filterKey = JSON.stringify(debouncedFilters)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { fetchDashboard() }, [filterKey])
+
+  const handleRefreshEarnings = async () => {
+    setEarningsRefreshing(true)
+    setEarningsMessage('')
+    try {
+      const res = await api.post('/dashboard/earnings/refresh')
+      const refreshed = res.data?.refreshed ?? 0
+      const failed = res.data?.failed ?? 0
+      setEarningsMessage(failed ? `Refreshed ${refreshed}, failed ${failed}` : `Refreshed ${refreshed}`)
+      await fetchDashboard()
+    } catch (err) {
+      setEarningsMessage(err.response?.data?.detail || 'Refresh failed')
+    } finally {
+      setEarningsRefreshing(false)
+    }
+  }
 
   if (!selectedCircle) {
     return (
@@ -363,7 +480,7 @@ export default function Dashboard() {
   if (!data) return null
 
   const { summary, top_holdings, all_holdings, allocation_by_tax,
-          allocation_by_currency, recent_transactions, winners, losers, member_breakdown } = data
+          allocation_by_currency, recent_transactions, winners, losers, member_breakdown, earnings_watch } = data
 
   const totalMv = summary.total_market_value
 
@@ -615,6 +732,38 @@ export default function Dashboard() {
             </div>
           ))}
         </div>
+      </div>
+
+      <div style={{
+        background: 'var(--card-bg)', border: '1px solid var(--card-border)',
+        borderRadius: '14px', padding: '18px', marginTop: '14px',
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'flex-start', marginBottom: '12px' }}>
+          <SectionHeader title="Earnings Watch" sub={earningsMessage || 'Active holdings in selected circle'} />
+          <button
+            onClick={handleRefreshEarnings}
+            disabled={earningsRefreshing || loading}
+            style={{
+              display: 'flex', alignItems: 'center', gap: '6px',
+              padding: '7px 12px', borderRadius: '8px',
+              border: '1px solid var(--card-border)',
+              background: 'var(--card-bg)', cursor: earningsRefreshing ? 'default' : 'pointer',
+              fontSize: '12px', color: 'var(--text-secondary)',
+              opacity: (earningsRefreshing || loading) ? 0.55 : 1,
+              whiteSpace: 'nowrap',
+            }}
+          >
+            <svg viewBox="0 0 16 16" fill="none" width="13" height="13"
+              style={{ animation: earningsRefreshing ? 'spin 1s linear infinite' : 'none' }}>
+              <path d="M13.5 8A5.5 5.5 0 1 1 8 2.5" stroke="currentColor" strokeWidth="1.5"
+                strokeLinecap="round" />
+              <path d="M8 1v3l2-1.5L8 1Z" fill="currentColor" />
+            </svg>
+            {earningsRefreshing ? 'Refreshing...' : 'Refresh'}
+            <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
+          </button>
+        </div>
+        <EarningsWatch rows={earnings_watch} />
       </div>
     </div>
   )
