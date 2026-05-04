@@ -59,7 +59,8 @@ def _post_import_task(
         )
         from app.services.price_service import (
             ensure_securities_exist, push_to_queue, disable_symbol,
-            update_holdings_unrealized_from_cache
+            update_holdings_unrealized_from_cache,
+            sync_security_master_active_symbols,
         )
 
         if not affected_account_ids:
@@ -99,6 +100,7 @@ def _post_import_task(
         # Step 4 — price queue
         push_to_queue(all_symbols, priority=True)
         update_holdings_unrealized_from_cache(bg_db)
+        sync_security_master_active_symbols(bg_db, refresh_queue=True)
 
         set_recalc_status(bg_db, batch_id, "COMPLETE")
         logger.info(f"[batch {batch_id}] Post-import task complete")
@@ -303,6 +305,7 @@ def delete_import_batch(
                 from app.services.acb_service import (
                     recalculate_holdings_for_accounts, recalculate_realized_gains
                 )
+                from app.services.price_service import sync_security_master_active_symbols
                 m_rows = _db.execute(
                     text("SELECT DISTINCT member_id FROM member_accounts WHERE id = ANY(CAST(:ids AS uuid[]))"),
                     {"ids": affected_ids}
@@ -313,6 +316,7 @@ def delete_import_batch(
                 ).fetchall()
                 recalculate_holdings_for_accounts(_db, affected_ids)
                 recalculate_realized_gains(_db, affected_ids, [str(r.member_id) for r in m_rows])
+                sync_security_master_active_symbols(_db, refresh_queue=True)
             except Exception as e:
                 logger.error(f"Delete batch recalc failed: {e}")
             finally:

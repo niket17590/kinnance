@@ -45,15 +45,19 @@ def _price_update_job():
     try:
         from app.services.price_service import (
             ensure_securities_exist,
+            sync_security_master_active_symbols,
             refresh_prices,
             pop_next_batch,
             push_to_queue,
             queue_sizes,
             _us_queue,
             _ca_queue,
-            _is_canadian
         )
         from sqlalchemy import text
+
+        # Keep security_master active flags and in-memory queues aligned
+        # with current open holdings before selecting the next batch.
+        sync_security_master_active_symbols(db, refresh_queue=True)
 
         # Safety net — find open holdings symbols missing from security_master
         missing_rows = db.execute(text("""

@@ -582,7 +582,91 @@ def ensure_securities_exist(db: Session, symbols: list[str]):
 
 
 # ============================================================
-# PUBLIC METHOD 2 — refresh_prices
+# PUBLIC METHOD 2 — sync active symbols
+# ============================================================
+
+def sync_security_master_active_symbols(db: Session, refresh_queue: bool = True) -> dict:
+    """
+    Keep security_master.is_active aligned with actual open holdings.
+
+    Active rule:
+      is_active = TRUE  if symbol has at least one open position anywhere
+      is_active = FALSE otherwise
+
+    Optionally updates in-memory queues:
+      - remove deactivated symbols from queue
+      - push newly activated symbols to queue front
+    """
+    open_rows = db.execute(
+        text("""
+            SELECT DISTINCT symbol
+            FROM holdings
+            WHERE is_position_open = TRUE
+            AND quantity_total > 0
+            AND symbol IS NOT NULL
+        """)
+    ).fetchall()
+    open_symbols = sorted({row.symbol for row in open_rows if row.symbol})
+    open_set = set(open_symbols)
+
+    # Safety: if an open symbol was never inserted in security_master, add it now.
+    if open_symbols:
+        ensure_securities_exist(db, open_symbols)
+
+    sec_rows = db.execute(
+        text("SELECT symbol, is_active FROM security_master")
+    ).fetchall()
+
+    to_activate = [row.symbol for row in sec_rows if row.symbol in open_set and not row.is_active]
+    to_deactivate = [row.symbol for row in sec_rows if row.symbol not in open_set and row.is_active]
+
+    changed = False
+    if to_activate:
+        db.execute(
+            text("""
+                UPDATE security_master
+                SET is_active = TRUE, updated_at = NOW()
+                WHERE symbol = ANY(CAST(:symbols AS text[]))
+            """),
+            {"symbols": to_activate},
+        )
+        changed = True
+
+    if to_deactivate:
+        db.execute(
+            text("""
+                UPDATE security_master
+                SET is_active = FALSE, updated_at = NOW()
+                WHERE symbol = ANY(CAST(:symbols AS text[]))
+            """),
+            {"symbols": to_deactivate},
+        )
+        changed = True
+
+    if changed:
+        db.commit()
+
+    if refresh_queue:
+        for symbol in to_deactivate:
+            remove_from_queue(symbol)
+        if to_activate:
+            push_to_queue(sorted(to_activate), priority=True)
+
+    logger.info(
+        "Security active sync complete — open=%s activated=%s deactivated=%s",
+        len(open_symbols),
+        len(to_activate),
+        len(to_deactivate),
+    )
+    return {
+        "open_symbols": len(open_symbols),
+        "activated": len(to_activate),
+        "deactivated": len(to_deactivate),
+    }
+
+
+# ============================================================
+# PUBLIC METHOD 3 — refresh_prices
 # US symbols → Twelve Data, CA symbols → yfinance
 # ============================================================
 
@@ -641,7 +725,7 @@ def refresh_prices(db: Session, us_symbols: list[str], ca_symbols: list[str]):
 
 
 # ============================================================
-# PUBLIC METHOD 3 — store_daily_close
+# PUBLIC METHOD 4 — store_daily_close
 # ============================================================
 
 def store_daily_close(db: Session):
@@ -679,7 +763,7 @@ def store_daily_close(db: Session):
 
 
 # ============================================================
-# PUBLIC METHOD 4 — disable_symbol (for security rename)
+# PUBLIC METHOD 5 — disable_symbol (for security rename)
 # ============================================================
 
 def disable_symbol(db: Session, symbol: str):

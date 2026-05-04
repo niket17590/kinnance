@@ -72,7 +72,10 @@ def _run_circle_resync(circle_id: str, account_ids: list[str]):
             recalculate_holdings_for_accounts,
             recalculate_realized_gains,
         )
-        from app.services.price_service import update_holdings_unrealized_from_cache
+        from app.services.price_service import (
+            update_holdings_unrealized_from_cache,
+            sync_security_master_active_symbols,
+        )
 
         _set_resync_status(circle_id, "PROCESSING")
 
@@ -89,6 +92,7 @@ def _run_circle_resync(circle_id: str, account_ids: list[str]):
         recalculate_holdings_for_accounts(bg_db, account_ids)
         recalculate_realized_gains(bg_db, account_ids, member_ids)
         update_holdings_unrealized_from_cache(bg_db)
+        sync_security_master_active_symbols(bg_db, refresh_queue=True)
         _set_resync_status(circle_id, "COMPLETE")
         logger.info(
             "Circle resync complete for %s (accounts=%s)",
